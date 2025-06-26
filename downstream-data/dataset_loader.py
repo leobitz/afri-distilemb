@@ -37,10 +37,10 @@ def load_news_dataset():
 
 def load_ner_dataset():
     if not os.path.exists('masakhanener.parquet'):
-        langs = ['amh', 'hau', 'ibo', 'kin', 'lug', 'luo', 'pcm', 'swa', 'wol', 'yor']
+        langs = ['bam', 'bbj', 'ewe', 'fon', 'hau', 'ibo', 'kin', 'lug', 'luo', 'mos', 'nya', 'pcm', 'sna', 'swa', 'tsn', 'twi', 'wol', 'xho', 'yor', 'zul']
         dss = []
         for lang in langs:
-            data = load_dataset('masakhaner', lang, trust_remote_code=True) 
+            data = load_dataset('masakhane/masakhaner2', lang, trust_remote_code=True) 
             dss.append(data)
         # Concatenate all datasets
         train_data = pd.concat([data['train'].to_pandas() for data in dss], ignore_index=True)
@@ -65,6 +65,8 @@ def load_ner_dataset():
     for labels in all_data['labels']:
         unique_labels.update(labels)
     return all_data, sorted(unique_labels)
+
+load_ner_dataset()
 
 def load_pos_dataset():
     if not os.path.exists('masakhapos.parquet'):
