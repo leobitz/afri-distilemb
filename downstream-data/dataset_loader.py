@@ -31,12 +31,9 @@ def load_news_dataset():
         all_data.to_parquet('masakhanews.parquet', index=False)
     else:
         all_data = pd.read_parquet('masakhanews.parquet')
-        print(f'Loaded {len(all_data)} rows from masakhanews.parquet columns {all_data.columns}')
-        # take one sample and print each column
-        sample = all_data.sample(1).iloc[0]
-        columns = all_data.columns
-    return all_data
-
+    print(f'Loaded {len(all_data)} rows from masakhanews.parquet columns {all_data.columns}')
+    unque_labels = set(all_data['label'].unique())
+    return all_data, sorted(unque_labels)
 
 def load_ner_dataset():
     if not os.path.exists('masakhanener.parquet'):
@@ -63,8 +60,11 @@ def load_ner_dataset():
     else:
         all_data = pd.read_parquet('masakhanener.parquet')
         print(f'Loaded {len(all_data)} rows from masakhanener.parquet columns {all_data.columns}')
-    return all_data
-
+    # from labels column, get unique labels
+    unique_labels = set()
+    for labels in all_data['labels']:
+        unique_labels.update(labels)
+    return all_data, sorted(unique_labels)
 
 def load_pos_dataset():
     if not os.path.exists('masakhapos.parquet'):
@@ -91,9 +91,11 @@ def load_pos_dataset():
     else:
         all_data = pd.read_parquet('masakhapos.parquet')
         print(f'Loaded {len(all_data)} rows from masakhapos.parquet columns {all_data.columns}')
-    return all_data
-
-
+    # from labels column, get unique labels
+    unique_labels = set()
+    for labels in all_data['labels']:
+        unique_labels.update(labels)
+    return all_data, sorted(unique_labels)
 
 def load_sentiment_file(path, lang):
     lines = open(path, 'r', encoding='utf-8').read().strip().split('\n')
@@ -121,8 +123,6 @@ def load_sentiment_dir(path):
         file_path = os.path.join(path, file_name)
         data.extend(load_sentiment_file(file_path, lang))
     return data
-
-
 
 def load_sentiment_task_a(path):
     train_dir = path + '/train'
@@ -160,7 +160,8 @@ def load_sentiment_task_c(path):
     all_data = pd.concat([test_df, dev_df], ignore_index=True)
     return all_data
 
-def load_sentiment(path):
+def load_sentiment():
+    path = "./afrisent-semeval-2023"
     if not os.path.exists("sentiment.parquet"):
         dfa = load_sentiment_task_a(f'{path}/SubtaskA')
         dfc = load_sentiment_task_c(f'{path}/SubtaskC')
@@ -180,7 +181,11 @@ def load_sentiment(path):
     else:
         df = pd.read_parquet("sentiment.parquet")
         print(f'Loaded {len(df)} rows from sentiment.parquet columns {df.columns}')
-    return df
+    # remove rows with label == label
+    df = df[df['label'] != 'label']
+    unique_labels = set(df['label'].unique())
+    # print(f'Unique labels: {unique_labels}')
+    return df, sorted(unique_labels)
 
 
 
