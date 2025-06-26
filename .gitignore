@@ -1,0 +1,6 @@
+*.parquet
+**/junk
+*.txt
+*.vec
+*.bin
+**/afrisent-semeval-2023

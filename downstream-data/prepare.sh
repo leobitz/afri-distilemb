@@ -1,0 +1,1 @@
+git clone https://github.com/afrisenti-semeval/afrisent-semeval-2023.git afrisent-semeval-2023

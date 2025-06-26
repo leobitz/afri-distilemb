@@ -1,0 +1,105 @@
+import torch
+import torch.nn as nn
+
+class DistillEmbConfig:
+    def __init__(self,
+                num_chars=400,
+                output_emb_size=512,
+                char_emb_size=64,
+                num_input_chars=15,
+                kernel_size=5,
+                dropout=0.1):
+        self.num_chars = num_chars
+        self.output_emb_size = output_emb_size
+        self.char_emb_size = char_emb_size
+        self.num_input_chars = num_input_chars
+        self.kernel = kernel_size
+        self.dropout = dropout
+
+
+
+class DistillEmbSmall(nn.Module):
+    
+    def __init__(self, config):
+        super(DistillEmbSmall, self).__init__()
+        self.config = config
+
+        self.embedding = nn.Embedding(self.config.num_chars, self.config.char_emb_size)
+        self.conv1 = nn.Conv1d(self.config.num_input_chars, 128, config.kernel, stride=1)
+        self.conv2 = nn.Conv1d(128, 256, config.kernel, stride=1)
+        self.conv3 = nn.Conv1d(256, 384, config.kernel, stride=1)
+        self.conv4 = nn.Conv1d(384, 512, 4, stride=1)
+        self.pool = nn.MaxPool1d(2, 2)
+        self.output_layer = nn.Linear(512, self.config.output_emb_size)
+
+        self.activation = nn.ReLU()
+        self.tanh = nn.Tanh()
+
+        self.norm0 = nn.LayerNorm([self.config.num_input_chars, self.config.char_emb_size])
+        self.norm1 = nn.LayerNorm([128, 30])
+        self.norm2 = nn.LayerNorm([256, 13])
+        self.norm3 = nn.LayerNorm([384, 4])
+        self.norm4 = nn.LayerNorm(self.config.output_emb_size)
+        self.output_norm = nn.LayerNorm(self.config.output_emb_size)
+
+        self.dropout = nn.Dropout(config.dropout)
+    
+    def embed(self, x):
+        x = self.embedding(x)
+        x = self.dropout(x)
+        x = self.norm0(x)
+        # print(x.shape)
+        x = self.conv1(x)
+        x = self.pool(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.norm1(x)
+        # print(x.shape)
+        x = self.conv2(x)
+        x = self.pool(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.norm2(x)
+        # print(x.shape)
+        x = self.conv3(x)
+        x = self.pool(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.norm3(x)
+        # print(x.shape)
+        x = self.conv4(x).squeeze()
+        # print(x.shape)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.norm4(x)
+        x = self.output_layer(x)
+
+        return x
+        
+    def forward(self, x):
+        if len(x.shape) == 2:
+            return self.output_norm(self.tanh(self.embed(x)))
+        
+        b, s = x.shape[0], x.shape[1]
+        x = x.view(-1, x.shape[-1])
+        x = self.tanh(self.embed(x))
+        x = self.dropout(x)
+        x = x.view((b, s, -1))
+        x = self.output_norm(x)
+        return x
+
+if __name__ == "__main__":
+    config = DistillEmbConfig(
+        num_chars=400,
+        output_emb_size=512,
+        char_emb_size=64,
+        num_input_chars=15,
+        kernel_size=5,
+        dropout=0.1
+    )
+    m = DistillEmbSmall(config)
+    import numpy as np
+    x = np.random.randint(0, 400, (10, 15))
+    x = torch.tensor(x, dtype=torch.int64)
+    y = m(x)
+    print(y.shape)
