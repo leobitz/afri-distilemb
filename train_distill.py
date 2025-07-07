@@ -26,10 +26,79 @@ from data_loader import load_sentiment
 from data_loader import load_news_dataset
 import pandas as pd
 from retrieval import build_json_pairs, top1_accuracy
+from torch.nn import functional as F
 
 random.seed(1000)
 torch.random.manual_seed(10000)
 np.random.seed(1000)
+
+import torch
+import torch.nn.functional as F
+
+import torch
+import torch.nn.functional as F
+
+def info_nce_loss(q, k, queue=None, *, tau: float = 0.07, top_k: int | None = None):
+    """
+    InfoNCE with either
+      • a per-sample negative queue  (queue shape  B × N × D), or
+      • mined negatives from the mini-batch (queue=None).
+
+    Args
+    ----
+    q      : (B, D)   – query embeddings
+    k      : (B, D)   – positive key embeddings (same order as q)
+    queue  : (B, N, D) or None
+    tau    : float    – temperature
+    top_k  : int or None
+             • When queue is None: number of hardest negatives to keep per anchor.
+               • None  -> use all B-1 batch negatives (SimCLR-style).
+               • 1..B-2 -> keep that many hardest negatives.
+             • Ignored if queue is provided.
+    """
+    # ℓ₂-normalise so dot-product ≈ cosine similarity
+    q = F.normalize(q, dim=-1)
+    k = F.normalize(k, dim=-1)
+
+    if queue is None:                               # -------- mined negatives --------
+        B = q.size(0)
+
+        # Full similarity matrix (B × B)
+        sim = torch.matmul(q, k.t())                # sim_ij = <q_i , k_j>
+
+        # Positive logits (diagonal)
+        pos = sim.diag().unsqueeze(1)               # (B, 1)
+
+        # All negatives: remove diagonal
+        neg = sim.masked_select(~torch.eye(B, dtype=torch.bool,
+                                           device=q.device))        # (B*(B-1),)
+        neg = neg.view(B, B - 1)                                    # (B, B-1)
+
+        # Keep only top-k hardest negatives if requested
+        if top_k is not None and 0 < top_k < B - 1:
+            neg, _ = torch.topk(neg, k=top_k, dim=1, largest=True)  # (B, top_k)
+
+        # Assemble logits and compute CE
+        logits = torch.cat([pos, neg], dim=1) / tau                 # (B, 1+neg)
+        labels = torch.zeros(B, dtype=torch.long, device=q.device)  # positives at idx 0
+        loss = F.cross_entropy(logits, labels)
+
+    else:                                           # -------- explicit queue ---------
+        queue = F.normalize(queue, dim=-1)          # (B, N, D)
+
+        # Positive logits
+        pos = torch.sum(q * k, dim=-1, keepdim=True)                # (B, 1)
+
+        # Negative logits from queue
+        neg = torch.einsum('bd,bnd->bn', q, queue)                  # (B, N)
+
+        logits = torch.cat([pos, neg], dim=1) / tau                 # (B, 1+N)
+        labels = torch.zeros(q.size(0), dtype=torch.long, device=q.device)
+        loss = F.cross_entropy(logits, labels)
+
+    return loss
+
+
 
 
 class DistillModule(L.LightningModule):
@@ -47,7 +116,10 @@ class DistillModule(L.LightningModule):
         x, pos_w2v, neg_w2v = batch
         z = self.model(x).view(pos_w2v.shape)
         
-        loss = self.triplet_loss(z, pos_w2v, neg_w2v)
+        if neg_w2v != None and len(neg_w2v.shape) == 2:
+            loss = self.triplet_loss(z, pos_w2v, neg_w2v)
+        else:
+            loss = info_nce_loss(z, pos_w2v, neg_w2v)
         self.training_step_outputs.append(loss)
         self.log("train_loss", loss)
         return {"loss": loss}
@@ -63,7 +135,10 @@ class DistillModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, pos_w2v, neg_w2v = batch
         z = self.model(x)
-        loss = self.triplet_loss(z, pos_w2v, neg_w2v)
+        if neg_w2v != None and len(neg_w2v.shape) == 2:
+            loss = self.triplet_loss(z, pos_w2v, neg_w2v)
+        else:
+            loss = info_nce_loss(z, pos_w2v, neg_w2v)
         self.log("epoch_val_loss", loss)
 
 
@@ -171,12 +246,13 @@ def load_corpus_words(path, vocab_set, line_prob=1.0, min_sent_length=8):
 
 class LangDistillDataset(Dataset):
     
-    def __init__(self, sentence_words, int2vocab, w2v_vectors, tokenizer: Tokenizer, neg_seq_len=32):
+    def __init__(self, sentence_words, int2vocab, w2v_vectors, tokenizer: Tokenizer, neg_seq_len=32, top_k_negatives=1):
         self.sentence_words = sentence_words
         self.int2vocab = int2vocab
         self.wvectors = w2v_vectors
         
         self.neg_seq_len = neg_seq_len
+        self.top_k_negatives = top_k_negatives
 
         self.tokenizer = tokenizer
         self.langs = list(sentence_words.keys())
@@ -192,8 +268,8 @@ class LangDistillDataset(Dataset):
         target_word, lang = self.int2vocab[idx]
         target_vec = self.wvectors[target_word] # word2vec embedding
         
-        neg_word = target_word
-        while target_word == neg_word:
+        neg_word = [target_word]
+        while target_word not in neg_word:
             if lang == 'punc' or random.random() < 0.2:
                 lang = random.choice(self.langs)
 
@@ -210,13 +286,15 @@ class LangDistillDataset(Dataset):
             xsims = np.linalg.norm(vecs - target_vec, axis=1) # L2 norm (similarity)
 
             sims = np.argsort(xsims) # index of the most similar
-            neg_word = neg_words[sims[0]] # index the word with the negative word with the highest similarity to the postive
+            # neg_word = neg_words[sims[0]] # index the word with the negative word with the highest similarity to the postive
+            # top k negatives
+            neg_word = [neg_words[xs] for xs in sims[:self.top_k_negatives]] # index the top k negatives
 
         # print(target_word, neg_word, sorted(neg_words)[:10])
         target_chars = self.tokenizer([target_word], add_special_tokens=False, return_attention_mask=False, padding=False, return_tensors="pt")['input_ids']
         target_chars = torch.LongTensor(target_chars).squeeze()
         pos_w2v = torch.Tensor(self.wvectors[target_word])
-        neg_w2v = torch.Tensor(self.wvectors[neg_word])
+        neg_w2v = torch.Tensor(np.array([self.wvectors[nw] for nw in neg_word])).squeeze()
         return target_chars, pos_w2v, neg_w2v
 
 def main():
@@ -281,14 +359,14 @@ def main():
                                 int2vocab=train_index2vocab,  
                                 w2v_vectors=w2v_emb, 
                                 tokenizer=tokenizer, 
-                                neg_seq_len=hparam['neg_seq_len'])
+                                neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
 
     # a, p, n = train_dataset[random.randint(0, len(train_dataset) - 1)]
     test_dataset = LangDistillDataset(sentence_words=test_words,  
                                   int2vocab=test_index2vocab,
                                     w2v_vectors=w2v_emb, 
                                     tokenizer=tokenizer, 
-                                    neg_seq_len=hparam['neg_seq_len'])
+                                    neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
 
     total_iteration = hparam['max_epochs'] * len(train_dataset) // hparam['batch_size']
     hparam['total_iteration'] = total_iteration
