@@ -4,3 +4,6 @@
 *.vec
 *.bin
 **/afrisent-semeval-2023
+**/__pycache__/
+**/logs/
+**/downstream-data/

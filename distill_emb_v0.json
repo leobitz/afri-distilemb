@@ -1,0 +1,23 @@
+{
+    "name": "distill_emb_v0",
+    "model": {
+        "hidden_size": 512,
+        "dropout": 0.1,
+        "neg_seq_len": 64,
+        "min_sent_length": 16,
+        "train_ratio": 0.99,
+        "vector_load_ratio": 1.0,
+        "sentence_load_ratio": 1.0,
+        "char_emb_size": 64
+    },
+    "train": {
+        "batch_size": 256,
+        "lr": 0.001,
+        "weight_decay": 0.0,
+        "clip_grad_norm": 1.0,
+        "checkpoint_dir": "checkpoints/distill_emb_v0",
+        "seq_len": 64,
+        "max_epochs": 512,
+        "max_word_piece": 10
+    }
+}

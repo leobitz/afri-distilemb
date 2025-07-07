@@ -1,22 +1,6 @@
 import torch
 import torch.nn as nn
-
-class DistillEmbConfig:
-    def __init__(self,
-                num_chars=400,
-                output_emb_size=512,
-                char_emb_size=64,
-                num_input_chars=15,
-                kernel_size=5,
-                dropout=0.1):
-        self.num_chars = num_chars
-        self.output_emb_size = output_emb_size
-        self.char_emb_size = char_emb_size
-        self.num_input_chars = num_input_chars
-        self.kernel = kernel_size
-        self.dropout = dropout
-
-
+from config import BertConfig
 
 class DistillEmbSmall(nn.Module):
     
@@ -24,7 +8,7 @@ class DistillEmbSmall(nn.Module):
         super(DistillEmbSmall, self).__init__()
         self.config = config
 
-        self.embedding = nn.Embedding(self.config.num_chars, self.config.char_emb_size)
+        self.embedding = nn.Embedding(self.config.char_vocab_size, self.config.char_emb_size)
         self.conv1 = nn.Conv1d(self.config.num_input_chars, 128, config.kernel, stride=1)
         self.conv2 = nn.Conv1d(128, 256, config.kernel, stride=1)
         self.conv3 = nn.Conv1d(256, 384, config.kernel, stride=1)
@@ -42,7 +26,7 @@ class DistillEmbSmall(nn.Module):
         self.norm4 = nn.LayerNorm(self.config.output_emb_size)
         self.output_norm = nn.LayerNorm(self.config.output_emb_size)
 
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(config.distill_dropout)
     
     def embed(self, x):
         x = self.embedding(x)
@@ -76,30 +60,30 @@ class DistillEmbSmall(nn.Module):
 
         return x
         
-    def forward(self, x):
+    def forward(self, input_ids: torch.Tensor, **kwargs):
+        x = input_ids
+        assert len(x.shape) in [2, 3], "Input tensor must be of shape (B, S) or (B, S, N)"
         if len(x.shape) == 2:
             return self.output_norm(self.tanh(self.embed(x)))
         
-        b, s = x.shape[0], x.shape[1]
-        x = x.view(-1, x.shape[-1])
-        x = self.tanh(self.embed(x))
-        x = self.dropout(x)
+        b, s, n = x.shape
+        x = x.view(b* s, n)
+        x = self.output_norm(self.tanh(self.embed(x)))
         x = x.view((b, s, -1))
-        x = self.output_norm(x)
         return x
 
 if __name__ == "__main__":
-    config = DistillEmbConfig(
+    config = BertConfig(
         num_chars=400,
         output_emb_size=512,
         char_emb_size=64,
-        num_input_chars=15,
+        num_input_chars=12,
         kernel_size=5,
         dropout=0.1
     )
     m = DistillEmbSmall(config)
     import numpy as np
-    x = np.random.randint(0, 400, (10, 15))
+    x = np.random.randint(0, 400, (10, 12))
     x = torch.tensor(x, dtype=torch.int64)
     y = m(x)
     print(y.shape)

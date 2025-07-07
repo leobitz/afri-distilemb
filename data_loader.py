@@ -2,18 +2,35 @@ import os
 import pandas as pd
 from datasets import load_dataset
 
+data_path = "downstream-data"
 
 def load_news_dataset():
-    if not os.path.exists('masakhanews.parquet'):
+    if not os.path.exists(f'{data_path}/masakhanews.parquet'):
         langs = ['amh', 'eng', 'fra', 'hau', 'ibo', 'lin', 'lug', 'orm', 'pcm', 'run', 'sna', 'som', 'swa', 'tir', 'xho', 'yor']
-        dss = []
+        dss = {}
         for lang in langs:
             data = load_dataset('masakhane/masakhanews', lang, trust_remote_code=True) 
-            dss.append(data)
+            dss[lang] = data
         # Concatenate all datasets
-        train_data = pd.concat([data['train'].to_pandas() for data in dss], ignore_index=True)
-        test_data = pd.concat([data['test'].to_pandas() for data in dss], ignore_index=True)
-        dev_data = pd.concat([data['validation'].to_pandas() for data in dss], ignore_index=True)
+        # train_data = pd.concat([dss[lang]['train'].to_pandas() for lang in dss.keys()], ignore_index=True)
+        # test_data = pd.concat([data['test'].to_pandas() for lang in dss.keys()], ignore_index=True)
+        # dev_data = pd.concat([data['validation'].to_pandas() for lang in dss.keys()], ignore_index=True)
+        train_data = []
+        test_data = []
+        dev_data = []
+        for lang, data in dss.items():
+            # convert to pandas DataFrame
+            train_data.append(data['train'].to_pandas())
+            test_data.append(data['test'].to_pandas())
+            dev_data.append(data['validation'].to_pandas())
+            # set the language column
+            train_data[-1]['lang'] = lang
+            test_data[-1]['lang'] = lang
+            dev_data[-1]['lang'] = lang
+        train_data = pd.concat(train_data, ignore_index=True)
+        test_data = pd.concat(test_data, ignore_index=True)
+        dev_data = pd.concat(dev_data, ignore_index=True)
+
         # Add split column
         train_data['split'] = 'train'
         test_data['split'] = 'test'
@@ -28,15 +45,15 @@ def load_news_dataset():
         all_data = all_data.drop_duplicates(subset=['text'])
         print(f'Loaded {len(all_data)} rows from masakhanews columns {all_data.columns}')
         # save to parquet
-        all_data.to_parquet('masakhanews.parquet', index=False)
+        all_data.to_parquet(f'{data_path}/masakhanews.parquet', index=False)
     else:
-        all_data = pd.read_parquet('masakhanews.parquet')
+        all_data = pd.read_parquet(f'{data_path}/masakhanews.parquet')
     print(f'Loaded {len(all_data)} rows from masakhanews.parquet columns {all_data.columns}')
     unque_labels = set(all_data['label'].unique())
     return all_data, sorted(unque_labels)
 
 def load_ner_dataset():
-    if not os.path.exists('masakhanener.parquet'):
+    if not os.path.exists(f'{data_path}/masakhanener.parquet'):
         langs = ['bam', 'bbj', 'ewe', 'fon', 'hau', 'ibo', 'kin', 'lug', 'luo', 'mos', 'nya', 'pcm', 'sna', 'swa', 'tsn', 'twi', 'wol', 'xho', 'yor', 'zul']
         dss = []
         for lang in langs:
@@ -58,7 +75,7 @@ def load_ner_dataset():
         # save to parquet
         all_data.to_parquet('masakhanener.parquet', index=False)
     else:
-        all_data = pd.read_parquet('masakhanener.parquet')
+        all_data = pd.read_parquet(f'{data_path}/masakhanener.parquet')
         print(f'Loaded {len(all_data)} rows from masakhanener.parquet columns {all_data.columns}')
     # from labels column, get unique labels
     unique_labels = set()
@@ -66,10 +83,8 @@ def load_ner_dataset():
         unique_labels.update(labels)
     return all_data, sorted(unique_labels)
 
-load_ner_dataset()
-
 def load_pos_dataset():
-    if not os.path.exists('masakhapos.parquet'):
+    if not os.path.exists(f'{data_path}/masakhapos.parquet'):
         langs = ['bam', 'bbj', 'ewe', 'fon', 'hau', 'ibo', 'kin', 'lug', 'luo', 'mos', 'nya', 'pcm', 'sna', 'swa', 'tsn', 'twi', 'wol', 'xho', 'yor', 'zul']
         dss = []
         for lang in langs:
@@ -89,9 +104,9 @@ def load_pos_dataset():
         all_data.rename(columns={'upos': 'labels'}, inplace=True)
         print(f'Loaded {len(all_data)} rows from masakhapos columns {all_data.columns}')
         # save to parquet
-        all_data.to_parquet('masakhapos.parquet', index=False)
+        all_data.to_parquet(f'{data_path}/masakhapos.parquet', index=False)
     else:
-        all_data = pd.read_parquet('masakhapos.parquet')
+        all_data = pd.read_parquet(f'{data_path}/masakhapos.parquet')
         print(f'Loaded {len(all_data)} rows from masakhapos.parquet columns {all_data.columns}')
     # from labels column, get unique labels
     unique_labels = set()
@@ -163,8 +178,8 @@ def load_sentiment_task_c(path):
     return all_data
 
 def load_sentiment():
-    path = "./afrisent-semeval-2023"
-    if not os.path.exists("sentiment.parquet"):
+    path = f"{data_path}/afrisent-semeval-2023"
+    if not os.path.exists(f"{data_path}/sentiment.parquet"):
         dfa = load_sentiment_task_a(f'{path}/SubtaskA')
         dfc = load_sentiment_task_c(f'{path}/SubtaskC')
         df = pd.concat([dfa, dfc], ignore_index=True)
@@ -179,9 +194,9 @@ def load_sentiment():
         print(f'Loaded {len(df)} rows from {path}')
         # remove duplicates
         # save to parquet
-        df.to_parquet("sentiment.parquet", index=False)
+        df.to_parquet(f"{data_path}/sentiment.parquet", index=False)
     else:
-        df = pd.read_parquet("sentiment.parquet")
+        df = pd.read_parquet(f"{data_path}/sentiment.parquet")
         print(f'Loaded {len(df)} rows from sentiment.parquet columns {df.columns}')
     # remove rows with label == label
     df = df[df['label'] != 'label']

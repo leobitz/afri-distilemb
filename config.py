@@ -114,6 +114,13 @@ class BertConfig(PretrainedConfig):
         use_cache=True,
         classifier_dropout=None,
         embedding_type="bert", # 'distilemb', 'fasttext
+        char_vocab_size=400,
+        output_emb_size=512,
+        char_emb_size=64,
+        num_input_chars=16,
+        kernel_size=5,
+        distill_dropout=0.1,
+        encoder_type="bert",  # 'bert', 'lstm'
         **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
@@ -134,6 +141,13 @@ class BertConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.classifier_dropout = classifier_dropout
         self.embedding_type = embedding_type
+        self.char_vocab_size = char_vocab_size
+        self.output_emb_size = output_emb_size
+        self.char_emb_size = char_emb_size
+        self.num_input_chars = num_input_chars
+        self.kernel = kernel_size
+        self.distill_dropout = distill_dropout
+        self.encoder_type = encoder_type
 
 
 class BertOnnxConfig(OnnxConfig):
