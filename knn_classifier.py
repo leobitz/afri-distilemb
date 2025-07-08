@@ -6,9 +6,15 @@ import torch
 
 class KNNTextClassifier:
 
-    def __init__(self, tokenizer, model=None, device="cuda"):
-        self.tokenizer = tokenizer
-        self.model = model.eval().to(device)
+    def __init__(self, tokenizer, model=None, pipeline=None, device="cuda"):
+        if pipeline is None:
+            self.tokenizer = tokenizer
+            self.model = model.eval().to(device)
+            self.pipeline = None
+        else:
+            self.pipeline = pipeline
+            self.model = None
+            self.tokenizer = None
 
     def classifiy(self,
             model,
@@ -48,29 +54,34 @@ class KNNTextClassifier:
             Accuracy on the test set.
         """
 
-        assert model is not None or self.model is not None, \
-            "You must provide a model or set it in the KNNTextClassifier instance."
+        if not self.pipeline:
+            assert model is not None or self.model is not None, \
+                "You must provide a model or set it in the KNNTextClassifier instance."
 
         if model is None:
-            model = self.model
+            if self.model:
+                model = self.model.eval().to(device)
         if tokenizer is None:
-            tokenizer = self.tokenizer
+            if self.tokenizer:
+                tokenizer = self.tokenizer
+
+        if self.pipeline is  None:
+            def pipeline(texts):
+                tokenized = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512)
+                tokenized = {k: v.to(device) for k, v in tokenized.items()}
+                with torch.no_grad():
+                    batch_emb = model(**tokenized)
+                # Ensure numpy float32 on CPU for sklearn
+                batch_emb = (
+                    batch_emb.detach().cpu().numpy()  # if torch.Tensor
+                    if hasattr(batch_emb, "detach")
+                    else np.asarray(batch_emb)
+                ).astype(np.float32).mean(axis=1)  # average over tokens if needed
+                return batch_emb
+            self.pipeline = pipeline
 
         def embed(texts: list) -> np.ndarray:
-            """Embed a list of texts using the provided model and tokenizer."""
-            tokenized = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512)
-            tokenized = {k: v.to(device) for k, v in tokenized.items()}
-
-            with torch.no_grad():
-                batch_emb = model(**tokenized)
-            
-            # Ensure numpy float32 on CPU for sklearn
-            batch_emb = (
-                batch_emb.detach().cpu().numpy()  # if torch.Tensor
-                if hasattr(batch_emb, "detach")
-                else np.asarray(batch_emb)
-            ).astype(np.float32).mean(axis=1)  # average over tokens if needed
-            return batch_emb
+            return self.pipeline(texts=texts)
 
         def _batch_embed(text_series: pd.Series) -> np.ndarray:
             """Vectorise texts in batches to avoid GPU / RAM spikes."""

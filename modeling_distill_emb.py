@@ -565,12 +565,6 @@ class BertSelfOutput(nn.Module):
         return hidden_states
 
 
-# BERT_SELF_ATTENTION_CLASSES = {
-#     "eager": BertSelfAttention,
-#     "sdpa": BertSdpaSelfAttention,
-# }
-
-
 # class BertAttention(nn.Module):
 #     def __init__(self, config, position_embedding_type=None):
 #         super().__init__()

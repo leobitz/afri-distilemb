@@ -25,7 +25,32 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 
-class DistilEmbConfig(PretrainedConfig):
+class DistillEmbConfig(PretrainedConfig):
+    r"""
+    
+    """
+    model_type = "distilemb"
+
+    def __init__(
+        self,
+        char_vocab_size=400,
+        num_input_chars=16,
+        distill_dropout=0.1,
+        size="small",  # 'small', 'base'
+        pad_char_id=0,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        self.char_vocab_size = char_vocab_size
+        self.num_input_chars = num_input_chars
+        self.distill_dropout = distill_dropout
+        self.size = size
+        self.pad_char_id = pad_char_id
+
+
+
+class DistillModelConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`BertModel`] or a [`TFBertModel`]. It is used to
     instantiate a BERT model according to the specified arguments, defining the model architecture. Instantiating a
@@ -113,14 +138,9 @@ class DistilEmbConfig(PretrainedConfig):
         position_embedding_type="absolute",
         use_cache=True,
         classifier_dropout=None,
-        embedding_type="bert", # 'distilemb', 'fasttext
-        char_vocab_size=400,
-        output_emb_size=512,
-        char_emb_size=64,
-        num_input_chars=16,
-        kernel_size=5,
-        distill_dropout=0.1,
+        embedding_type="bert", # 'distillemb', 'fasttext
         encoder_type="bert",  # 'bert', 'lstm'
+        distil_config: DistillEmbConfig = None,
         **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
@@ -141,26 +161,6 @@ class DistilEmbConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.classifier_dropout = classifier_dropout
         self.embedding_type = embedding_type
-        self.char_vocab_size = char_vocab_size
-        self.output_emb_size = output_emb_size
-        self.char_emb_size = char_emb_size
-        self.num_input_chars = num_input_chars
-        self.kernel = kernel_size
-        self.distill_dropout = distill_dropout
+        self.distil_config = distil_config
         self.encoder_type = encoder_type
 
-
-class BertOnnxConfig(OnnxConfig):
-    @property
-    def inputs(self) -> Mapping[str, Mapping[int, str]]:
-        if self.task == "multiple-choice":
-            dynamic_axis = {0: "batch", 1: "choice", 2: "sequence"}
-        else:
-            dynamic_axis = {0: "batch", 1: "sequence"}
-        return OrderedDict(
-            [
-                ("input_ids", dynamic_axis),
-                ("attention_mask", dynamic_axis),
-                ("token_type_ids", dynamic_axis),
-            ]
-        )

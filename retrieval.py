@@ -23,21 +23,23 @@ class HFEncoder:
     Light wrapper that turns any HuggingFace model into
     an `.encode()` function returning numpy vectors.
     """
-    def __init__(self, model, tokenizer, model_name: str=None):
+    def __init__(self, model, tokenizer, model_name: str=None, pipeline: callable = None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        if model is None or tokenizer is None:
-            self.tok = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModel.from_pretrained(model_name).to(self.device).eval()
+        self.pipeline = pipeline
+        if self.pipeline is None:
+            if model is None or tokenizer is None:
+                self.tok = AutoTokenizer.from_pretrained(model_name)
+                self.model = AutoModel.from_pretrained(model_name).to(self.device).eval()
+            else:
+                self.tok = tokenizer
+                self.model = model.to(self.device).eval()
+            self.pipeline = self.embed
         else:
-            self.tok = tokenizer
-            self.model = model.to(self.device).eval()
+            self.tok = None
+            self.model = None
 
-    @torch.inference_mode()
-    def encode(self, sentences: list[str], batch_size: int = 32) -> np.ndarray:
-        outs = []
-        for start in range(0, len(sentences), batch_size):
-            batch = sentences[start : start + batch_size]
-            enc = self.tok(
+    def embed(self, batch: list[str]):
+        enc = self.tok(
                 batch,
                 padding=True,
                 truncation=True,
@@ -45,17 +47,25 @@ class HFEncoder:
                 return_attention_mask=True,
                 max_length=512,
             )
-            # print({k:v.shape for k, v in enc.items()})
-            enc = {k: v.to(self.device) for k, v in enc.items()}
-            with torch.no_grad():
-                result = self.model(**enc)
-            if type(result) is torch.Tensor:
-                emb = result
-            else:
-                emb = result.last_hidden_state
-            
-            emb = mean_pool(emb, enc["attention_mask"])
-            outs.append(emb.cpu().numpy())
+        # print({k:v.shape for k, v in enc.items()})
+        enc = {k: v.to(self.device) for k, v in enc.items()}
+        with torch.no_grad():
+            result = self.model(**enc)
+        if type(result) is torch.Tensor:
+            emb = result
+        else:
+            emb = result.last_hidden_state
+        
+        emb = mean_pool(emb, enc["attention_mask"])
+        return emb.cpu().numpy()
+
+    @torch.inference_mode()
+    def encode(self, sentences: list[str], batch_size: int = 32) -> np.ndarray:
+        outs = []
+        for start in range(0, len(sentences), batch_size):
+            batch = sentences[start : start + batch_size]
+            embedding = self.pipeline(batch)
+            outs.append(embedding)
         return np.vstack(outs)
 
 
@@ -189,7 +199,8 @@ def top1_accuracy(
     qa_pairs: list[dict],
     batch_size: int = 32,
     model: AutoModel | None = None,
-    tokenizer: AutoTokenizer | None = None
+    tokenizer: AutoTokenizer | None = None,
+    pipeline = None
 ) -> float:
     """
     Parameters
@@ -204,7 +215,7 @@ def top1_accuracy(
     accuracy ∈ [0,1] : proportion of queries where argmax-similarity == 0.
     """
     " qa_pairs has text, headlines and lang keys "
-    encoder = HFEncoder(model=model, tokenizer=tokenizer)
+    encoder = HFEncoder(model=model, tokenizer=tokenizer, pipeline=pipeline)
     correct = total = 0
     lang_acc = {}
     lang_count = {}

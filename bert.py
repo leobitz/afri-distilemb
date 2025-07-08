@@ -57,6 +57,9 @@ from transformers.utils import (
 from transformers.models.bert.configuration_bert import BertConfig
 
 
+from distill_emb import DistillEmb
+from transformers import RwkvConfig, RwkvModel
+
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "google-bert/bert-base-uncased"
@@ -219,20 +222,19 @@ class BertEmbeddings(nn.Module):
         return embeddings
 
 
-from distill_emb import DistillEmbSmall
-from transformers import RwkvConfig, RwkvModel
+
 class DistilEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     def __init__(self, config):
         super().__init__()
-        self.word_embeddings = DistillEmbSmall(config)
+        self.word_embeddings = DistillEmb(config.distil_config)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
-
+        output_emb_size  = 512
         self.output_layer = None
-        if config.output_emb_size != config.hidden_size:
-            self.output_layer = nn.Linear(config.output_emb_size, config.hidden_size)
+        if output_emb_size != config.hidden_size:
+            self.output_layer = nn.Linear(output_emb_size, config.hidden_size)
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -1164,11 +1166,11 @@ class BertModel(BertPreTrainedModel):
         super().__init__(config)
         self.config = config
 
-        if "bert" in config.embedding_type:
+        if "bert" in config.embedding_type.lower():
             self.embeddings = BertEmbeddings(config)
-        elif "distill" in config.embedding_type:
+        elif "distill" in config.embedding_type.lower():
             self.embeddings = DistilEmbeddings(config)
-        elif 'fasttext' in config.embedding_type:
+        elif 'fasttext' in config.embedding_type.lower():
             self.embeddings = FasttextEmbeddings(config)
         else:
             raise ValueError(

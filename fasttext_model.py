@@ -16,27 +16,32 @@ class FastTextModel(nn.Module):
                     continue
                 word = parts[0]
                 try:
+
+                    if len(parts[1:]) != vec_size:
+                        raise ValueError(f"Vector for word '{word}' does not have the expected dimension of {vec_size}., found {len(word2vec[word])}.")
                     vector = list(map(float, parts[1:]))
                     word2vec[word] = torch.tensor(vector, dtype=torch.float32)
-                    if len(word2vec[word]) != vec_size:
-                        raise ValueError(f"Vector for word '{word}' does not have the expected dimension of {vec_size}., found {len(word2vec[word])}.")
                 except:
                     print(parts)
+        self.word2id = {}
+        self.word2id['<pad>'] = 0  # add pad token with ID 0
         # add unk token with a vector of zeros
-        unk_vector = torch.zeros(vec_size, dtype=torch.float32)
-        word2vec['<unk>'] = unk_vector
+        word2vec['<unk>'] = torch.zeros(vec_size, dtype=torch.float32)
+        word2vec['<pad>'] = torch.zeros(vec_size, dtype=torch.float32)  # pad token vector
         # create an embedding layer with the size of the vocabulary and the dimension of the vectors
-        self.embedding = nn.Embedding(len(word2vec), vec_size)
+        self.embedding = nn.Embedding(len(word2vec) + 1, vec_size)
         # initialize the embedding weights with the vectors from the file
         weights = torch.zeros(len(word2vec), vec_size, dtype=torch.float32)
-        self.word2id = {}
-        for word, vec in weights.items():
+        
+        for word, vec in word2vec.items():
+            if word in self.word2id:
+                continue
             self.word2id[word] = len(self.word2id)  # assign a unique ID to each word
             weights[self.word2id[word]] = vec
         self.embedding.weight = nn.Parameter(weights, requires_grad=False)  # freeze the weights
 
 
-    def forward(self, input_ids, **kwargs):
+    def forward(self, input_ids, attention_mask, pool=False, **kwargs):
         """
         Forward pass of the model.
         
@@ -46,10 +51,14 @@ class FastTextModel(nn.Module):
         Returns:
             torch.Tensor: Output tensor after passing through the model.
         """
-        assert input_ids.dim() == 2, "Input tensor must be 2D (batch_size, seq_length)"
-        # if input_id is not in the vocabulary, replace it with the unk token
-        embedded = self.embedding(input_ids)
-        # Global average pooling
-        pooled = embedded.mean(dim=1)
-        return pooled
-
+        embeddings = self.embedding(input_ids)
+        if pool:
+            # Apply attention mask: set masked positions to 0
+            mask = attention_mask.unsqueeze(-1).float()
+            masked_embeddings = embeddings * mask
+            # Avoid division by zero
+            lengths = mask.sum(dim=1).clamp(min=1)
+            pooled = masked_embeddings.sum(dim=1) / lengths
+            return pooled
+        else:
+            return embeddings

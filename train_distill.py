@@ -14,13 +14,11 @@ from torch.utils.data import DataLoader
 from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
 from lightning.pytorch.loggers import WandbLogger
-from distill_emb import DistillEmbSmall as DistillEmb
+from distill_emb import DistillEmb
 from tokenizer import CharTokenizer as Tokenizer
 import json
 from torch.utils.data import Dataset 
-from config import DistilEmbConfig
-from transformers import AutoTokenizer, RwkvConfig, RwkvModel, AutoModel
-from tokenizer import CharTokenizer
+from config import DistillEmbConfig
 from knn_classifier import KNNTextClassifier
 from data_loader import load_sentiment
 from data_loader import load_news_dataset
@@ -28,15 +26,10 @@ import pandas as pd
 from retrieval import build_json_pairs, top1_accuracy
 from torch.nn import functional as F
 
+
 random.seed(1000)
 torch.random.manual_seed(10000)
 np.random.seed(1000)
-
-import torch
-import torch.nn.functional as F
-
-import torch
-import torch.nn.functional as F
 
 def info_nce_loss_v2(anchor, positive, negatives, temperature=0.1):
     # Compute similarities
@@ -119,8 +112,6 @@ def info_nce_loss(q, k, queue=None, *, tau: float = 0.07, top_k: int | None = No
     return loss
 
 
-
-
 class DistillModule(L.LightningModule):
     def __init__(self, model: DistillEmb, tokenizer: Tokenizer, **kwargs):
         super().__init__()
@@ -179,7 +170,7 @@ class DistillModule(L.LightningModule):
     def _extrinsic_eval(self, current_epoch):
         train_mode = self.model.training
         self.model.eval()  # Set the model to evaluation mode
-        if current_epoch % 16 == 0:
+        if current_epoch % 8 == 0:
             model = self.model
             tokenizer = self.tokenizer
             classifier = KNNTextClassifier(tokenizer, model=model)
@@ -399,7 +390,6 @@ def main():
                                 tokenizer=tokenizer, 
                                 neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
 
-    # a, p, n = train_dataset[random.randint(0, len(train_dataset) - 1)]
     test_dataset = LangDistillDataset(sentence_words=test_words,  
                                   int2vocab=test_index2vocab,
                                     w2v_vectors=w2v_emb, 
@@ -417,29 +407,16 @@ def main():
     test_dataloader = DataLoader(
         test_dataset, batch_size=hparam['batch_size'], num_workers=2, pin_memory=True, shuffle=False)
 
-    config = DistilEmbConfig(
-        vocab_size=30522,
-        hidden_size=768,
-        num_hidden_layers=9,
-        num_attention_heads=8,
-        intermediate_size=3072,
-        max_position_embeddings=512,
-        type_vocab_size=2,
-        pad_token_id=0,
-        position_embedding_type="absolute",
-        use_cache=True,
-        classifier_dropout=None,
-        embedding_type="distill",  # 'distilemb', 'fasttext'
-        encoder_type='lstm',
+    config = DistillEmbConfig(
         num_input_chars=tokenizer.max_word_length,  # number of characters in each token
         char_vocab_size=tokenizer.char_vocab_size,
-        output_emb_size=512
+        size="small",
+        distill_dropout=hparam['dropout'],
     )
     distill_emb = DistillEmb(config)
     
 
     cbs = []
-
     checkpoint_callback = ModelCheckpoint(
         save_top_k=1,
         monitor="epoch_val_loss",
