@@ -95,6 +95,8 @@ class KNNTextClassifier:
         X_test = _batch_embed(test_df["text"])
         y_test = test_df["label"].values
         y_pred = knn.predict(X_test)
+        test_df['pred'] = y_pred
+
         
         per_lang = {}
         # ---------- 3. Metrics ----------
@@ -119,4 +121,4 @@ class KNNTextClassifier:
         else:
             f1 = f1_score(y_test, y_pred, average="weighted")
             acc = accuracy_score(y_test, y_pred)
-        return f1, acc, per_lang
+        return f1, acc, per_lang, test_df

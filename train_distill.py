@@ -18,7 +18,7 @@ from distill_emb import DistillEmbSmall as DistillEmb
 from tokenizer import CharTokenizer as Tokenizer
 import json
 from torch.utils.data import Dataset 
-from config import BertConfig
+from config import DistilEmbConfig
 from transformers import AutoTokenizer, RwkvConfig, RwkvModel, AutoModel
 from tokenizer import CharTokenizer
 from knn_classifier import KNNTextClassifier
@@ -37,6 +37,26 @@ import torch.nn.functional as F
 
 import torch
 import torch.nn.functional as F
+
+def info_nce_loss_v2(anchor, positive, negatives, temperature=0.1):
+    # Compute similarities
+    sim_positive = F.cosine_similarity(anchor, positive, dim=-1)  # Similarity with positive
+    sim_negatives = F.cosine_similarity(anchor.unsqueeze(1), negatives, dim=-1)  # Similarities with negatives
+    
+    # Scale by temperature
+    sim_positive = sim_positive / temperature
+    sim_negatives = sim_negatives / temperature
+    
+    # Exponentiate similarities
+    exp_positive = torch.exp(sim_positive)
+    exp_negatives = torch.exp(sim_negatives)
+    
+    # Compute denominator
+    denominator = exp_positive + torch.sum(exp_negatives, dim=-1)
+    
+    # Compute InfoNCE loss
+    loss = -torch.log(exp_positive / denominator)
+    return loss.mean()  # Mean over batch
 
 def info_nce_loss(q, k, queue=None, *, tau: float = 0.07, top_k: int | None = None):
     """
@@ -116,10 +136,11 @@ class DistillModule(L.LightningModule):
         x, pos_w2v, neg_w2v = batch
         z = self.model(x).view(pos_w2v.shape)
         
+        # loss = self.triplet_loss(z, pos_w2v, neg_w2v)
         if neg_w2v != None and len(neg_w2v.shape) == 2:
             loss = self.triplet_loss(z, pos_w2v, neg_w2v)
         else:
-            loss = info_nce_loss(z, pos_w2v, neg_w2v)
+            loss = info_nce_loss_v2(z, pos_w2v, neg_w2v)
         self.training_step_outputs.append(loss)
         self.log("train_loss", loss)
         return {"loss": loss}
@@ -131,14 +152,17 @@ class DistillModule(L.LightningModule):
         self._extrinsic_eval(self.current_epoch)
         self.model.train()
         self.log("epoch_train_loss", loss)
+        self.training_step_outputs = []
 
     def validation_step(self, batch, batch_idx):
         x, pos_w2v, neg_w2v = batch
         z = self.model(x)
+
+        # loss = self.triplet_loss(z, pos_w2v, neg_w2v)
         if neg_w2v != None and len(neg_w2v.shape) == 2:
             loss = self.triplet_loss(z, pos_w2v, neg_w2v)
         else:
-            loss = info_nce_loss(z, pos_w2v, neg_w2v)
+            loss = info_nce_loss_v2(z, pos_w2v, neg_w2v)
         self.log("epoch_val_loss", loss)
 
 
@@ -156,21 +180,30 @@ class DistillModule(L.LightningModule):
         train_mode = self.model.training
         self.model.eval()  # Set the model to evaluation mode
         if current_epoch % 16 == 0:
-            
-            classifier = KNNTextClassifier(self.tokenizer, model=self.model, device=self.device)
-            df, classes = load_sentiment()
-            train_df = df.sample(2000, random_state=42)
-            test_df = df.drop(train_df.index).sample(500, random_state=42)
-            sent_f1, acc, per_lang = classifier.classifiy(train_df=train_df, test_df=test_df, k=5, batch_size=32, model=None, tokenizer=None)
+            model = self.model
+            tokenizer = self.tokenizer
+            classifier = KNNTextClassifier(tokenizer, model=model)
 
-            data, classes = load_news_dataset()
-            train_df = data.sample(2000, random_state=42)
-            test_df = data.drop(train_df.index).sample(500, random_state=42)
-            news_f1, acc, per_lang = classifier.classifiy(train_df=train_df, test_df=test_df, k=5, batch_size=32, model=None, tokenizer=None)
+            df, classes = load_sentiment()
+            # Sample equal amount for each language in the 'lang' column
+            min_count = min(df['lang'].value_counts().min(), 250)
+            sent_df = df.groupby('lang').apply(lambda x: x.sample(min_count, random_state=42)).reset_index(drop=True)
+            sent_train_df = sent_df.sample(frac=0.8, random_state=42)
+            sent_test_df = sent_df.drop(sent_train_df.index)
+            print(f"train shape: {sent_train_df.shape}, test shape: {sent_test_df.shape}")
+            sent_f1, sent_acc, sent_per_lang, sent_test_df = classifier.classifiy(train_df=sent_train_df, test_df=sent_test_df, k=5, batch_size=8, model=None, tokenizer=None)
+
+            df, classes = load_news_dataset()
+            min_count = min(df['lang'].value_counts().min(), 250)
+            news_df = df.groupby('lang').apply(lambda x: x.sample(min_count, random_state=42)).reset_index(drop=True)
+            news_train_df = news_df.sample(frac=0.8, random_state=42)
+            news_test_df = news_df.drop(news_train_df.index)
+            print(f"train shape: {news_train_df.shape}, test shape: {news_test_df.shape}")
+            news_f1, news_acc, news_per_lang, news_test_df = classifier.classifiy(train_df=news_train_df, test_df=news_test_df, k=5, batch_size=8, model=None, tokenizer=None)
 
             df = pd.read_json('downstream-data/news_result.json')
             d = df.to_dict(orient='records')
-            ret_acc, _, _  = top1_accuracy(d, batch_size=32, model=self.model, tokenizer=self.tokenizer)
+            ret_acc, _, ret_per_lang = top1_accuracy(d, batch_size=8, model=model, tokenizer=tokenizer)
 
             self.log("sent_f1",sent_f1)
             self.log("news_f1", news_f1)
@@ -268,8 +301,9 @@ class LangDistillDataset(Dataset):
         target_word, lang = self.int2vocab[idx]
         target_vec = self.wvectors[target_word] # word2vec embedding
         
-        neg_word = [target_word]
-        while target_word not in neg_word:
+        neg_word = target_word
+        xneg_words = []
+        while target_word == neg_word:
             if lang == 'punc' or random.random() < 0.2:
                 lang = random.choice(self.langs)
 
@@ -281,20 +315,24 @@ class LangDistillDataset(Dataset):
             neg_words = neg_words - set([target_word]) # incase the target word is in the negative word
             neg_words = list(neg_words)
             
+            if len(neg_words) < self.top_k_negatives:
+                continue
+            
             vecs = np.stack([self.wvectors[wrd] for wrd in neg_words]) # collect w2v embedding of negatives
 
             xsims = np.linalg.norm(vecs - target_vec, axis=1) # L2 norm (similarity)
 
             sims = np.argsort(xsims) # index of the most similar
             # neg_word = neg_words[sims[0]] # index the word with the negative word with the highest similarity to the postive
-            # top k negatives
-            neg_word = [neg_words[xs] for xs in sims[:self.top_k_negatives]] # index the top k negatives
+            xneg_words = [neg_words[xs] for xs in sims[:self.top_k_negatives]] # index the top k negatives
+            neg_word = xneg_words[0] # the first negative word is the most similar to the target word
 
         # print(target_word, neg_word, sorted(neg_words)[:10])
         target_chars = self.tokenizer([target_word], add_special_tokens=False, return_attention_mask=False, padding=False, return_tensors="pt")['input_ids']
         target_chars = torch.LongTensor(target_chars).squeeze()
         pos_w2v = torch.Tensor(self.wvectors[target_word])
-        neg_w2v = torch.Tensor(np.array([self.wvectors[nw] for nw in neg_word])).squeeze()
+        # neg_w2v = torch.Tensor(self.wvectors[neg_word]).squeeze()
+        neg_w2v = torch.Tensor(np.stack([self.wvectors[nw] for nw in xneg_words])).squeeze()
         return target_chars, pos_w2v, neg_w2v
 
 def main():
@@ -379,7 +417,7 @@ def main():
     test_dataloader = DataLoader(
         test_dataset, batch_size=hparam['batch_size'], num_workers=2, pin_memory=True, shuffle=False)
 
-    config = BertConfig(
+    config = DistilEmbConfig(
         vocab_size=30522,
         hidden_size=768,
         num_hidden_layers=9,
