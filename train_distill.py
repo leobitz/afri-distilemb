@@ -51,67 +51,6 @@ def info_nce_loss_v2(anchor, positive, negatives, temperature=0.1):
     loss = -torch.log(exp_positive / denominator)
     return loss.mean()  # Mean over batch
 
-def info_nce_loss(q, k, queue=None, *, tau: float = 0.07, top_k: int | None = None):
-    """
-    InfoNCE with either
-      • a per-sample negative queue  (queue shape  B × N × D), or
-      • mined negatives from the mini-batch (queue=None).
-
-    Args
-    ----
-    q      : (B, D)   – query embeddings
-    k      : (B, D)   – positive key embeddings (same order as q)
-    queue  : (B, N, D) or None
-    tau    : float    – temperature
-    top_k  : int or None
-             • When queue is None: number of hardest negatives to keep per anchor.
-               • None  -> use all B-1 batch negatives (SimCLR-style).
-               • 1..B-2 -> keep that many hardest negatives.
-             • Ignored if queue is provided.
-    """
-    # ℓ₂-normalise so dot-product ≈ cosine similarity
-    q = F.normalize(q, dim=-1)
-    k = F.normalize(k, dim=-1)
-
-    if queue is None:                               # -------- mined negatives --------
-        B = q.size(0)
-
-        # Full similarity matrix (B × B)
-        sim = torch.matmul(q, k.t())                # sim_ij = <q_i , k_j>
-
-        # Positive logits (diagonal)
-        pos = sim.diag().unsqueeze(1)               # (B, 1)
-
-        # All negatives: remove diagonal
-        neg = sim.masked_select(~torch.eye(B, dtype=torch.bool,
-                                           device=q.device))        # (B*(B-1),)
-        neg = neg.view(B, B - 1)                                    # (B, B-1)
-
-        # Keep only top-k hardest negatives if requested
-        if top_k is not None and 0 < top_k < B - 1:
-            neg, _ = torch.topk(neg, k=top_k, dim=1, largest=True)  # (B, top_k)
-
-        # Assemble logits and compute CE
-        logits = torch.cat([pos, neg], dim=1) / tau                 # (B, 1+neg)
-        labels = torch.zeros(B, dtype=torch.long, device=q.device)  # positives at idx 0
-        loss = F.cross_entropy(logits, labels)
-
-    else:                                           # -------- explicit queue ---------
-        queue = F.normalize(queue, dim=-1)          # (B, N, D)
-
-        # Positive logits
-        pos = torch.sum(q * k, dim=-1, keepdim=True)                # (B, 1)
-
-        # Negative logits from queue
-        neg = torch.einsum('bd,bnd->bn', q, queue)                  # (B, N)
-
-        logits = torch.cat([pos, neg], dim=1) / tau                 # (B, 1+N)
-        labels = torch.zeros(q.size(0), dtype=torch.long, device=q.device)
-        loss = F.cross_entropy(logits, labels)
-
-    return loss
-
-
 class DistillModule(L.LightningModule):
     def __init__(self, model: DistillEmb, tokenizer: Tokenizer, **kwargs):
         super().__init__()
