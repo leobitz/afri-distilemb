@@ -345,8 +345,8 @@ def main():
         filename="distill_emb_v0-{epoch:02d}-{epoch_val_loss:.2f}",
     )
 
-    logger = WandbLogger(log_model="all", save_dir="logs/", name="distill_emb_v0", project="distill_emb", entity="leobitz")
-    # logger = TensorBoardLogger("logs", name="distill_emb_v0")
+    # logger = WandbLogger(log_model="all", save_dir="logs/", name="distill_emb_v0", project="distill_emb", entity="leobitz")
+    logger = TensorBoardLogger("logs", name="distill_emb_v0")
     
     
     cbs.append(checkpoint_callback)

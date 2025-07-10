@@ -1189,7 +1189,16 @@ class BertModel(BertPreTrainedModel):
 
     def get_input_embeddings(self):
         return self.embeddings.word_embeddings
-
+    
+    def load_word_embeddings(self, path):
+        distill_emb = DistillEmb(self.config.distil_config)
+        if os.path.exists(path):
+            state_dict = torch.load(path, map_location='cpu')['state_dict']
+            state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
+            distill_emb.load_state_dict(state_dict)
+        else:
+            raise FileNotFoundError(f"Path {path} does not exist.")
+        
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
 

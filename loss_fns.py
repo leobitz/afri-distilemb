@@ -54,7 +54,7 @@ def info_nce_loss_v2(anchor, positive, negatives, temperature=0.1):
     if anchor.dim() != 2 or positive.dim() != 2:
         raise ValueError("Anchor and positive must be 2D tensors with shape (b, d).")
     
-    if not negatives:
+    if negatives is None:
         negatives = generate_similars_from_embeddings(positive.unsqueeze(0), 3).squeeze(0)
     
     # Compute similarities
