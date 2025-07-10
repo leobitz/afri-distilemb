@@ -73,6 +73,16 @@ class CharTokenizer:
             word = word + self.special_name2char['eos']
             word = word.ljust(self.max_word_length, self.special_name2char['wpad'])
         return [self.valid_char2id.get(char, self.valid_char2id[self.special_name2char['unk']]) for char in word]
+    
+    def clean_word(self, word: str) -> str:
+        word = word[:self.max_word_length-1]
+        return "".join([char if char in self.valid_char2id else self.special_name2char['unk'] for char in word])
+    
+    def clean_sentence(self, sentence: str) -> str:
+        """
+        Clean a sentence by replacing invalid characters with the unknown character.
+        """
+        return " ".join([self.clean_word(word) for word in sentence.split()])
 
     def _decode_word(self, ids: list, strip=False) -> str:
         """

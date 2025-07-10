@@ -25,31 +25,12 @@ from data_loader import load_news_dataset
 import pandas as pd
 from retrieval import build_json_pairs, top1_accuracy
 from torch.nn import functional as F
-
+from loss_fns import generate_similars_from_embeddings, info_nce_loss_v2
 
 random.seed(1000)
 torch.random.manual_seed(10000)
 np.random.seed(1000)
 
-def info_nce_loss_v2(anchor, positive, negatives, temperature=0.1):
-    # Compute similarities
-    sim_positive = F.cosine_similarity(anchor, positive, dim=-1)  # Similarity with positive
-    sim_negatives = F.cosine_similarity(anchor.unsqueeze(1), negatives, dim=-1)  # Similarities with negatives
-    
-    # Scale by temperature
-    sim_positive = sim_positive / temperature
-    sim_negatives = sim_negatives / temperature
-    
-    # Exponentiate similarities
-    exp_positive = torch.exp(sim_positive)
-    exp_negatives = torch.exp(sim_negatives)
-    
-    # Compute denominator
-    denominator = exp_positive + torch.sum(exp_negatives, dim=-1)
-    
-    # Compute InfoNCE loss
-    loss = -torch.log(exp_positive / denominator)
-    return loss.mean()  # Mean over batch
 
 class DistillModule(L.LightningModule):
     def __init__(self, model: DistillEmb, tokenizer: Tokenizer, **kwargs):
