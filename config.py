@@ -38,6 +38,9 @@ class DistillEmbConfig(PretrainedConfig):
         distill_dropout=0.1,
         size="small",  # 'small', 'base'
         pad_char_id=0,
+        embedding_size=512,
+        use_tanh=False,
+        use_normalize=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -47,6 +50,9 @@ class DistillEmbConfig(PretrainedConfig):
         self.distill_dropout = distill_dropout
         self.size = size
         self.pad_char_id = pad_char_id
+        self.embedding_size = embedding_size
+        self.use_tanh = use_tanh
+        self.use_normalize = use_normalize
 
 
 
@@ -161,6 +167,6 @@ class DistillModelConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.classifier_dropout = classifier_dropout
         self.embedding_type = embedding_type
-        self.distil_config = distil_config
+        self.distill_config = distil_config
         self.encoder_type = encoder_type
 

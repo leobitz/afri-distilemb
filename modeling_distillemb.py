@@ -59,7 +59,7 @@ from transformers.models.bert.configuration_bert import BertConfig
 
 from distill_emb import DistillEmb
 from transformers import RwkvConfig, RwkvModel
-
+from loss_fns import info_nce_loss_v2, generate_similars_from_embeddings
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "google-bert/bert-base-uncased"
@@ -157,6 +157,33 @@ def load_tf_weights_in_bert(model, config, tf_checkpoint_path):
         pointer.data = torch.from_numpy(array)
     return model
 
+@dataclass
+class EmbeddingLMOutput(ModelOutput):
+    """
+    Base class for masked language models outputs.
+
+    Args:
+        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+            Masked language modeling (MLM) loss.
+        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
+            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+    """
+
+    loss: Optional[torch.FloatTensor] = None
+    embeddings: Optional[torch.FloatTensor] = None
+    hidden_states: Optional[tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[tuple[torch.FloatTensor, ...]] = None
 
 class BertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
@@ -228,7 +255,7 @@ class DistilEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.word_embeddings = DistillEmb(config.distil_config)
+        self.word_embeddings = DistillEmb(config.distill_config)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
         output_emb_size  = 512
@@ -279,6 +306,11 @@ class DistilEmbeddings(nn.Module):
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
+            # Randomly set 30% of embeddings to random vectors
+            # if self.training:
+            #     mask = torch.rand(inputs_embeds.shape[:2], device=inputs_embeds.device) < 0.3
+            #     rand_embeds = torch.randn_like(inputs_embeds)
+            #     inputs_embeds = torch.where(mask.unsqueeze(-1), rand_embeds, inputs_embeds)
             if self.output_layer is not None:
                 inputs_embeds = self.output_layer(inputs_embeds)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
@@ -772,11 +804,52 @@ class BertLayer(nn.Module):
         layer_output = self.output(intermediate_output, attention_output)
         return layer_output
 
+class LSTMLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        bidirectional = not config.is_decoder
+        self.lstm = nn.LSTM(
+            input_size=config.hidden_size,
+            hidden_size=config.hidden_size // 2,
+            num_layers=1,
+            batch_first=True,
+            dropout=config.hidden_dropout_prob if config.num_hidden_layers > 1 else 0,
+            bidirectional=bidirectional,
+        )
+        self.activation = nn.GELU
+        # if bidirectional:
+        self.output_mapper = nn.Linear(config.hidden_size, config.hidden_size)
+        # else:
+        #     self.output_mapper = nn.Identity()
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        output_attentions: Optional[bool] = False,
+    ) -> Tuple[torch.Tensor]:
+        lengths = None
+        if attention_mask is not None:
+            lengths = attention_mask.sum(dim=1).cpu()
+            packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
+            packed_output, _ = self.lstm(packed)
+            output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+        else:
+            output, _ = self.lstm(hidden_states)
+        output = self.activation(output)
+        output = self.output_mapper(output)
+        return (output,)
 
 class BertEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        # LAYER_CLASS = BertLayer if 
         self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
@@ -884,12 +957,17 @@ class BertPooler(nn.Module):
 class BertPredictionHeadTransform(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        # output size is 'embedding_size' if it is set, otherwise it is 'hidden_size'
+        if hasattr(config, "distill_config") and config.distill_config.embedding_size is not None:
+            output_size = config.distill_config.embedding_size
+        else:
+            output_size = config.hidden_size
+        self.dense = nn.Linear(config.hidden_size, output_size)
         if isinstance(config.hidden_act, str):
             self.transform_act_fn = ACT2FN[config.hidden_act]
         else:
             self.transform_act_fn = config.hidden_act
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(output_size, eps=config.layer_norm_eps)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
@@ -1177,7 +1255,7 @@ class BertModel(BertPreTrainedModel):
                 f"Unknown embedding type {config.embedding_type}. Supported types are: 'bert', 'distill', 'fasttext'."
             )
         ENCODER_CLASS = LSTMEncoder if config.encoder_type == "lstm" else BertEncoder
-        self.encoder = ENCODER_CLASS(config)
+        self.encoder = BertEncoder(config)
 
         self.pooler = BertPooler(config) if add_pooling_layer else None
 
@@ -1191,7 +1269,7 @@ class BertModel(BertPreTrainedModel):
         return self.embeddings.word_embeddings
     
     def load_word_embeddings(self, path):
-        distill_emb = DistillEmb(self.config.distil_config)
+        distill_emb = DistillEmb(self.config.distill_config)
         if os.path.exists(path):
             state_dict = torch.load(path, map_location='cpu')['state_dict']
             state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
@@ -2237,3 +2315,109 @@ class BertForQuestionAnswering(BertPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+
+class BertForEmbeddingLM(BertPreTrainedModel):
+
+    def __init__(self, config):
+        super().__init__(config)
+
+        if config.is_decoder:
+            logger.warning(
+                "If you want to use `BertForMaskedLM` make sure `config.is_decoder=False` for "
+                "bi-directional self-attention."
+            )
+
+        self.bert = BertModel(config, add_pooling_layer=False)
+        self.predict = BertPredictionHeadTransform(config)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+
+    # @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
+    # @add_code_sample_docstrings(
+    #     checkpoint=_CHECKPOINT_FOR_DOC,
+    #     output_type=EmbeddingLMOutput,
+    #     config_class=_CONFIG_FOR_DOC,
+    #     expected_output="'paris'",
+    #     expected_loss=0.88,
+    # )
+    def forward(
+        self,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple[torch.Tensor], EmbeddingLMOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
+            config.vocab_size]` (see `input_ids` docstring) Tokens with indices set to `-100` are ignored (masked), the
+            loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`
+        """
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs[0]
+        last_embeddings = self.predict(sequence_output)
+
+        emb_lm_loss = None
+        if labels is not None:
+            postives = labels
+            negatives = generate_similars_from_embeddings(postives, top_k=3, mask=attention_mask)
+            # shift prediction scores and input ids by one
+            # last_embeddings = last_embeddings[:, :-1, :].contiguous()
+            # postives = postives[:, 1:].contiguous()
+            # attention_mask = attention_mask[:, 1:].contiguous()
+            # negatives = negatives[:, 1:].contiguous()
+            emb_lm_loss = info_nce_loss_v2(last_embeddings, positive=postives, negatives=negatives, attention_mask=attention_mask)
+
+        if not return_dict:
+            output = (last_embeddings,) + outputs[2:]
+            return ((emb_lm_loss,) + output) if emb_lm_loss is not None else output
+
+        return EmbeddingLMOutput(
+            loss=emb_lm_loss,
+            embeddings=last_embeddings,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
+        input_shape = input_ids.shape
+        effective_batch_size = input_shape[0]
+
+        #  add a dummy token
+        if self.config.pad_token_id is None:
+            raise ValueError("The PAD token should be defined for generation")
+
+        attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((attention_mask.shape[0], 1))], dim=-1)
+        dummy_token = torch.full(
+            (effective_batch_size, 1), self.config.pad_token_id, dtype=torch.long, device=input_ids.device
+        )
+        input_ids = torch.cat([input_ids, dummy_token], dim=1)
+
+        return {"input_ids": input_ids, "attention_mask": attention_mask}

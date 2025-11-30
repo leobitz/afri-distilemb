@@ -11,9 +11,9 @@
         "char_emb_size": 64
     },
     "train": {
-        "batch_size": 2048,
+        "batch_size": 512,
         "lr": 0.001,
-        "weight_decay": 0.0,
+        "weight_decay": 0.00,
         "clip_grad_norm": 1.0,
         "checkpoint_dir": "checkpoints/distill_emb_v0",
         "seq_len": 64,

@@ -8,3 +8,4 @@
 **/logs/
 **/downstream-data/
 *.tar
+pretrained-data/*

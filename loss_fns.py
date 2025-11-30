@@ -23,7 +23,7 @@ def generate_similars_from_embeddings(embeddings, top_k=1, mask=None):
         # If a mask is provided, apply it to the similarity matrix
         # mask.shape = (b, s)
         mask = mask.unsqueeze(1).expand(-1, seq_len, -1)
-        similarity_matrix.masked_fill_(~mask, -float('inf'))
+        similarity_matrix.masked_fill_(~mask.bool(), -float('inf'))
     # similarity_matrix.shape = (b, s, s)
     # Find the top_k most similar embeddings
     top_k_similarities, top_k_indices = torch.topk(similarity_matrix, k=top_k, dim=-1)
@@ -47,7 +47,7 @@ def generate_similars_from_embeddings(embeddings, top_k=1, mask=None):
         return similar_embeddings.squeeze(2) # (b, s, d)
     return similar_embeddings # (b, s, top_k, d)
 
-def info_nce_loss_v2(anchor, positive, negatives, temperature=0.1):
+def info_nce_loss(anchor, positive, negatives=None, temperature=0.1):
     # anchor.shape = (b, d)
     # positive.shape = (b, d)
     # negatives.shape = (b, n, d) or None
@@ -75,3 +75,44 @@ def info_nce_loss_v2(anchor, positive, negatives, temperature=0.1):
     # Compute InfoNCE loss
     loss = -torch.log(exp_positive / denominator)
     return loss.mean()  # Mean over batch
+
+
+def info_nce_loss_v2(anchor, positive, negatives, attention_mask=None, temperature=0.1):
+    # anchor.shape = (b, s, d)
+    # positive.shape = (b, s, d)
+    # negatives.shape = (b, s, n, d)
+    # attention_mask.shape = (b, s)
+    
+    # Compute similarities
+    # sim_positive.shape = (b, s)
+    sim_positive = F.cosine_similarity(anchor, positive, dim=-1)
+    # anchor.unsqueeze(2).shape = (b, s, 1, d)
+    # negatives.shape = (b, s, n, d)
+    # sim_negatives.shape = (b, s, n)
+    sim_negatives = F.cosine_similarity(anchor.unsqueeze(2), negatives, dim=-1)
+    
+    # Scale by temperature
+    sim_positive = sim_positive / temperature
+    sim_negatives = sim_negatives / temperature
+    
+    # Exponentiate similarities
+    exp_positive = torch.exp(sim_positive)
+    exp_negatives = torch.exp(sim_negatives)
+    
+    # Compute denominator
+    # sum over negative samples, shape: (b, s)
+    sum_exp_negatives = torch.sum(exp_negatives, dim=-1)
+    denominator = exp_positive + sum_exp_negatives
+    
+    # Compute InfoNCE loss
+    # loss per token, shape: (b, s)
+    loss = -torch.log(exp_positive / denominator)
+    
+    if attention_mask is not None:
+        # Apply mask to the loss
+        loss = loss.masked_fill(~attention_mask.bool(), 0)
+        # Compute mean loss only over non-masked tokens
+        masked_loss = loss.sum() / attention_mask.sum()
+        return masked_loss
+    
+    return loss.mean()

@@ -25,7 +25,9 @@ from data_loader import load_news_dataset
 import pandas as pd
 from retrieval import build_json_pairs, top1_accuracy
 from torch.nn import functional as F
-from loss_fns import generate_similars_from_embeddings, info_nce_loss_v2
+from loss_fns import generate_similars_from_embeddings, info_nce_loss
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.nn import functional as F
 
 random.seed(1000)
 torch.random.manual_seed(10000)
@@ -38,6 +40,8 @@ class DistillModule(L.LightningModule):
         self.model = model
         self.tokenizer = tokenizer
         self.save_hyperparameters(ignore=["model", "tokenizer"])
+        self.normalize = kwargs.get("normalize", True)
+        self.temperature = kwargs.get("temperature", 0.1)
         
         self.triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2)
         self.training_step_outputs = []
@@ -46,12 +50,22 @@ class DistillModule(L.LightningModule):
 
         x, pos_w2v, neg_w2v = batch
         z = self.model(x).view(pos_w2v.shape)
+
+        if self.normalize:
+            z = F.normalize(z, p=2, dim=-1)
+            pos_w2v = F.normalize(pos_w2v, p=2, dim=-1)
+            if neg_w2v != None and len(neg_w2v.shape) == 3:
+                b, s, f = neg_w2v.shape
+                neg_w2v = neg_w2v.view(b * s, f)
+                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
+                neg_w2v = neg_w2v.view(b, s, f)
+            elif neg_w2v != None and len(neg_w2v.shape) == 2:
+                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
         
-        # loss = self.triplet_loss(z, pos_w2v, neg_w2v)
         if neg_w2v != None and len(neg_w2v.shape) == 2:
             loss = self.triplet_loss(z, pos_w2v, neg_w2v)
         else:
-            loss = info_nce_loss_v2(z, pos_w2v, neg_w2v)
+            loss = info_nce_loss(z, pos_w2v, neg_w2v, temperature=self.temperature)
         self.training_step_outputs.append(loss)
         self.log("train_loss", loss)
         return {"loss": loss}
@@ -67,25 +81,44 @@ class DistillModule(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, pos_w2v, neg_w2v = batch
-        z = self.model(x)
 
-        # loss = self.triplet_loss(z, pos_w2v, neg_w2v)
+        z = self.model(x).view(pos_w2v.shape)
+        if self.normalize:
+            z = F.normalize(z, p=2, dim=-1)
+            pos_w2v = F.normalize(pos_w2v, p=2, dim=-1)
+            if neg_w2v != None and len(neg_w2v.shape) == 3:
+                b, s, f = neg_w2v.shape
+                neg_w2v = neg_w2v.view(b * s, f)
+                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
+                neg_w2v = neg_w2v.view(b, s, f)
+            elif neg_w2v != None and len(neg_w2v.shape) == 2:
+                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
+        
         if neg_w2v != None and len(neg_w2v.shape) == 2:
             loss = self.triplet_loss(z, pos_w2v, neg_w2v)
         else:
-            loss = info_nce_loss_v2(z, pos_w2v, neg_w2v)
+            loss = info_nce_loss(z, pos_w2v, neg_w2v, temperature=self.temperature)
         self.log("epoch_val_loss", loss)
 
-
+    
     def configure_optimizers(self):
-        
-        self.optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, 
-                                           weight_decay=self.hparams.weight_decay)
-        self.scheduler = CosineAnnealingLR(self.optimizer ,
-                              T_max = self.hparams.total_iteration, # Maximum number of iterations.
-                             eta_min = 1e-6) # Minimum learning rate.
-        
-        return [self.optimizer], [self.scheduler]
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,
+            betas=(0.9, 0.98),
+        )
+        warmup_iters = int(0.05 * self.hparams.total_iteration)
+        cosine_iters = self.hparams.total_iteration - warmup_iters
+        sched = SequentialLR(
+            optimizer,
+            schedulers=[
+                LinearLR(optimizer, start_factor=0.1, total_iters=max(1, warmup_iters)),
+                CosineAnnealingLR(optimizer, T_max=max(1, cosine_iters), eta_min=1e-6),
+            ],
+            milestones=[warmup_iters],
+        )
+        return [optimizer], [{"scheduler": sched, "interval": "step"}]
 
     def _extrinsic_eval(self, current_epoch):
         train_mode = self.model.training
@@ -244,6 +277,7 @@ class LangDistillDataset(Dataset):
         pos_w2v = torch.Tensor(self.wvectors[target_word])
         # neg_w2v = torch.Tensor(self.wvectors[neg_word]).squeeze()
         neg_w2v = torch.Tensor(np.stack([self.wvectors[nw] for nw in xneg_words])).squeeze()
+        # apply tanh to pos_w2v and neg_w2v
         return target_chars, pos_w2v, neg_w2v
 
 def main():
@@ -330,7 +364,7 @@ def main():
     config = DistillEmbConfig(
         num_input_chars=tokenizer.max_word_length,  # number of characters in each token
         char_vocab_size=tokenizer.char_vocab_size,
-        size="small",
+        size="base",
         distill_dropout=hparam['dropout'],
     )
     distill_emb = DistillEmb(config)
