@@ -28,8 +28,7 @@ class DistillEmbSmall(nn.Module):
         self.output_layer = nn.Linear(512, 512)
 
         self.activation = ACTIVATION_FUNCS[config.activation]()
-        self.tanh = nn.Tanh()
-
+        
         self.norm0 = nn.LayerNorm([self.config.num_input_chars, 64])
         self.norm1 = nn.LayerNorm([128, 30])
         self.norm2 = nn.LayerNorm([256, 13])

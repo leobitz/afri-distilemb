@@ -276,7 +276,7 @@ def main(hparam: dict):
         char_vocab_size=tokenizer.char_vocab_size,
         size=hparam['size'],
         distill_dropout=hparam['dropout'],
-        use_normalize=hparam['normalize'],
+        use_normalize=hparam['use_normalize'],
         use_tanh=hparam['use_tanh'],
         activation=hparam['activation'] 
     )
@@ -338,6 +338,7 @@ if __name__ == '__main__':
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--use_tanh", action="store_true")
+    parser.add_argument("--use_normalize", action="store_true")
     parser.add_argument("--clip_grad_norm", type=float, default=1.0)
     parser.add_argument("--vector_load_ratio", type=float, default=0.5)
     parser.add_argument("--sentence_load_ratio", type=float, default=0.5)
@@ -351,7 +352,7 @@ if __name__ == '__main__':
     # run_name
     parser.add_argument("--run_name", type=str, default=None)
     # task_eval_every
-    parser.add_argument("--task_eval_every", type=int, default=8)
+    parser.add_argument("--task_eval_every", type=int, default=4)
     # repo id
     parser.add_argument("--hf_repo_id", type=str, default=None)
     # size
