@@ -4,3 +4,5 @@ gdown https://drive.google.com/uc?id=1wTERtistSqtWsuNfrsMJ3MznZUt6Ylu8 -o pretra
 tar -xf pretrained-data/afriberta_train_lang.tar -C pretrained-data/
 gdown https://drive.google.com/uc?id=1fyKs79YWpegnWDKZGn9nrHEsylmCWXk4 -O pretrained-data/lang2word.json
 gdown https://drive.google.com/uc?id=1SOJpGJTEpHYzP5KVzVI21kyutRWxglYY -O pretrained-data/vocab2lang.json
+mkdir -p embeddings/afriberta
+gdown https://drive.google.com/uc?id=1x1AIVV2ipmOJtjDLnxDTCafkhhBoMOZS -O embeddings/afriberta/afriberta.vec
