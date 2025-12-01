@@ -30,6 +30,7 @@ from helper import LangDistillDataset
 import argparse
 import os
 from huggingface_hub import HfApi, create_repo
+import multiprocessing as mp
 
 random.seed(1000)
 torch.random.manual_seed(10000)
@@ -263,12 +264,12 @@ def main(hparam: dict):
     hparam['total_iteration'] = total_iteration
     train_dataloader = DataLoader(
         train_dataset, 
-        num_workers=4, 
+        num_workers=(mp.cpu_count() - 1), 
         pin_memory=True,
         shuffle=True,  
         batch_size=hparam['batch_size'])
     test_dataloader = DataLoader(
-        test_dataset, batch_size=hparam['batch_size'], num_workers=2, pin_memory=True, shuffle=False)
+        test_dataset, batch_size=hparam['batch_size'], num_workers=(mp.cpu_count() - 1), pin_memory=True, shuffle=False)
 
     config = DistillEmbConfig(
         num_input_chars=tokenizer.max_word_length,  # number of characters in each token
