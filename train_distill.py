@@ -28,6 +28,8 @@ from torch.nn import functional as F
 from helper import load_word_embeddings, load_corpus_words
 from helper import LangDistillDataset
 import argparse
+import os
+from huggingface_hub import HfApi, create_repo
 
 random.seed(1000)
 torch.random.manual_seed(10000)
@@ -135,7 +137,6 @@ class DistillModule(L.LightningModule):
             sent_df = df.groupby('lang').apply(lambda x: x.sample(min_count, random_state=42)).reset_index(drop=True)
             sent_train_df = sent_df.sample(frac=0.8, random_state=42)
             sent_test_df = sent_df.drop(sent_train_df.index)
-            print(f"train shape: {sent_train_df.shape}, test shape: {sent_test_df.shape}")
             sent_f1, sent_acc, sent_per_lang, sent_test_df = classifier.classifiy(train_df=sent_train_df, test_df=sent_test_df, k=5, batch_size=8, model=None, tokenizer=None)
 
             df, classes = load_news_dataset()
@@ -143,7 +144,6 @@ class DistillModule(L.LightningModule):
             news_df = df.groupby('lang').apply(lambda x: x.sample(min_count, random_state=42)).reset_index(drop=True)
             news_train_df = news_df.sample(frac=0.8, random_state=42)
             news_test_df = news_df.drop(news_train_df.index)
-            print(f"train shape: {news_train_df.shape}, test shape: {news_test_df.shape}")
             news_f1, news_acc, news_per_lang, news_test_df = classifier.classifiy(train_df=news_train_df, test_df=news_test_df, k=5, batch_size=8, model=None, tokenizer=None)
 
             df = pd.read_json('downstream-data/news_result.json')
@@ -158,14 +158,37 @@ class DistillModule(L.LightningModule):
             avg_score = (sent_f1 + news_f1 + ret_acc) / 3.0
             current_best = self.best_task_performance.get("task-average-f1", float("-inf"))
             if avg_score > current_best:
+                ckpt_path = f"logs/{self.hparams.run_name}/best_avg_epoch/"
+                dir_name = ckpt_path #os.path.dirname(ckpt_path)
                 self.best_task_performance = {
                     "sent_f1": sent_f1,
                     "news_f1": news_f1,
                     "retrieval_acc": ret_acc,
-                    "task-average-f1": (sent_f1 + news_f1 + ret_acc) / 3.0
+                    "task-average-f1": (sent_f1 + news_f1 + ret_acc) / 3.0,
+                    "epoch": current_epoch,
+                    "path": dir_name
                 }
-                ckpt_path = f"logs/{self.hparams.run_name}/best_avg_epoch_{current_epoch}.ckpt"
-                self.model.save_pretrained(ckpt_path)
+                os.makedirs(dir_name, exist_ok=True)
+                self.model.save_pretrained(dir_name)
+                with open(os.path.join(dir_name, "tokenizer_config.json"), "w") as f:
+                    charset = json.load(open('tokenizer/charset.json', 'r', encoding='utf-8'))
+                    json.dump(
+                        {
+                            "max_word_length": tokenizer.max_word_length,
+                            "char_vocab_size": tokenizer.char_vocab_size,
+                            "charset": charset
+                        },
+                        f,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                # save hyperparams
+                with open(os.path.join(dir_name, "hparams.json"), "w") as f:
+                    json.dump(self.hparams, f, ensure_ascii=False, indent=2)
+                # save performance
+                with open(os.path.join(dir_name, "performance.json"), "w") as f:
+                    json.dump(self.best_task_performance, f, ensure_ascii=False, indent=2)
+                print(f"New best average task performance at epoch {current_epoch}: {self.best_task_performance}")
 
         self.model.train(train_mode)  # Set the model back to training mode if it was in training mode before
     
@@ -188,104 +211,122 @@ def main(hparam: dict):
                                        lang2word_file='pretrained-data/lang2word.json',
                                        vocab2lang_file='pretrained-data/vocab2lang.json')
     
-#     # intersection of vocab and vocab2lang
-#     vocab = vocab & set(vocab2lang.keys())
+    # intersection of vocab and vocab2lang
+    vocab = vocab & set(vocab2lang.keys())
     
-#     vocab_list = list(vocab)
-#     np.random.shuffle(vocab_list)
-#     train_size = int(len(vocab) * hparam['train_ratio'])
-#     train_vocab = vocab_list[:train_size]
-#     test_vocab = vocab_list[train_size:]
+    vocab_list = list(vocab)
+    np.random.shuffle(vocab_list)
+    train_size = int(len(vocab) * hparam['train_ratio'])
+    train_vocab = vocab_list[:train_size]
+    test_vocab = vocab_list[train_size:]
     
-#     print("Finished loading corpus", len(sentence_words), sentence_words.keys())
-    
-    
-#     train_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(train_vocab))}
-#     train_vocab2index = {v: k for k, v in enumerate(sorted(train_vocab))}
-#     test_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(test_vocab))}
-#     test_vocab2index = {v: k for k, v in enumerate(sorted(test_vocab))}
+    print("Finished loading corpus", len(sentence_words), sentence_words.keys())
     
     
-#     train_words = {}
-#     test_words = {}
-#     for lang in sentence_words.keys():
-#         train_words[lang] = []
-#         test_words[lang] = []
-#         for word in sentence_words[lang]:
-#             if word in train_vocab2index:
-#                 train_words[lang].append(train_vocab2index[word])
-#             elif word in test_vocab2index:
-#                 test_words[lang].append(test_vocab2index[word])
+    train_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(train_vocab))}
+    train_vocab2index = {v: k for k, v in enumerate(sorted(train_vocab))}
+    test_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(test_vocab))}
+    test_vocab2index = {v: k for k, v in enumerate(sorted(test_vocab))}
+    
+    
+    train_words = {}
+    test_words = {}
+    for lang in sentence_words.keys():
+        train_words[lang] = []
+        test_words[lang] = []
+        for word in sentence_words[lang]:
+            if word in train_vocab2index:
+                train_words[lang].append(train_vocab2index[word])
+            elif word in test_vocab2index:
+                test_words[lang].append(test_vocab2index[word])
                 
-#     print("# of train words: ", len(train_words))
-#     print("# of test words: ", len(test_words))
-#     print("# of train vocab: ", len(train_vocab))
-#     print("# of test vocab: ", len(test_vocab))
-#     print(train_words.keys())
-#     print(test_words.keys())
+    print("# of train words: ", len(train_words))
+    print("# of test words: ", len(test_words))
+    print("# of train vocab: ", len(train_vocab))
+    print("# of test vocab: ", len(test_vocab))
+    print(train_words.keys())
+    print(test_words.keys())
 
-#     train_dataset = LangDistillDataset(sentence_words=train_words,
-#                                 int2vocab=train_index2vocab,  
-#                                 w2v_vectors=w2v_emb, 
-#                                 tokenizer=tokenizer, 
-#                                 neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
+    train_dataset = LangDistillDataset(sentence_words=train_words,
+                                int2vocab=train_index2vocab,  
+                                w2v_vectors=w2v_emb, 
+                                tokenizer=tokenizer, 
+                                neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
 
-#     test_dataset = LangDistillDataset(sentence_words=test_words,  
-#                                   int2vocab=test_index2vocab,
-#                                     w2v_vectors=w2v_emb, 
-#                                     tokenizer=tokenizer, 
-#                                     neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
+    test_dataset = LangDistillDataset(sentence_words=test_words,  
+                                  int2vocab=test_index2vocab,
+                                    w2v_vectors=w2v_emb, 
+                                    tokenizer=tokenizer, 
+                                    neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
 
-#     total_iteration = hparam['max_epochs'] * len(train_dataset) // hparam['batch_size']
-#     hparam['total_iteration'] = total_iteration
-#     train_dataloader = DataLoader(
-#         train_dataset, 
-#         num_workers=4, 
-#         pin_memory=True,
-#         shuffle=True,  
-#         batch_size=hparam['batch_size'])
-#     test_dataloader = DataLoader(
-#         test_dataset, batch_size=hparam['batch_size'], num_workers=2, pin_memory=True, shuffle=False)
+    total_iteration = hparam['max_epochs'] * len(train_dataset) // hparam['batch_size']
+    hparam['total_iteration'] = total_iteration
+    train_dataloader = DataLoader(
+        train_dataset, 
+        num_workers=4, 
+        pin_memory=True,
+        shuffle=True,  
+        batch_size=hparam['batch_size'])
+    test_dataloader = DataLoader(
+        test_dataset, batch_size=hparam['batch_size'], num_workers=2, pin_memory=True, shuffle=False)
 
-#     config = DistillEmbConfig(
-#         num_input_chars=tokenizer.max_word_length,  # number of characters in each token
-#         char_vocab_size=tokenizer.char_vocab_size,
-#         size="base",
-#         distill_dropout=hparam['dropout'],
-#         use_normalize=hparam['normalize'],
-#         use_tanh=hparam['use_tanh']
-#     )
-#     distill_emb = DistillEmb(config)
+    config = DistillEmbConfig(
+        num_input_chars=tokenizer.max_word_length,  # number of characters in each token
+        char_vocab_size=tokenizer.char_vocab_size,
+        size=hparam['size'],
+        distill_dropout=hparam['dropout'],
+        use_normalize=hparam['normalize'],
+        use_tanh=hparam['use_tanh'],
+        activation=hparam['activation'] 
+    )
+    distill_emb = DistillEmb(config)
     
 
-#     cbs = []
-#     checkpoint_callback = ModelCheckpoint(
-#         save_top_k=1,
-#         monitor="epoch_val_loss",
-#         mode="min",
-#         dirpath="logs/distill_emb_v0",
-#         filename="distill_emb_v0-{epoch:02d}-{epoch_val_loss:.2f}",
-#     )
+    cbs = []
 
-#     logger = WandbLogger(log_model="all", 
-#                     save_dir="logs/", 
-#                     name=hparam['run_name'], 
-#                     project="distill_emb", 
-#                     entity="leobitz")
-#     # logger = TensorBoardLogger("logs", name="distill_emb_v0")
-    
-    
-#     cbs.append(checkpoint_callback)
-#     trainer = L.Trainer(
-#                 max_epochs=hparam['max_epochs'], 
-#                 logger=logger, 
-#                 log_every_n_steps=1,
-#                 gradient_clip_val=hparam['clip_grad_norm'],
-#                 gradient_clip_algorithm='norm', 
-#                 callbacks=cbs)
+    logger = WandbLogger(log_model=True, 
+                    save_dir="logs/", 
+                    name=hparam['run_name'], 
+                    project="distill_emb", 
+                    entity="leobitz")
 
-#     trainer.fit(model=DistillModule(model=distill_emb, tokenizer=tokenizer, **hparam),
-#                 train_dataloaders=train_dataloader, val_dataloaders=test_dataloader)
+    
+    # cbs.append(checkpoint_callback)
+    trainer = L.Trainer(
+                max_epochs=hparam['max_epochs'], 
+                logger=logger, 
+                log_every_n_steps=1,
+                gradient_clip_val=hparam['clip_grad_norm'],
+                gradient_clip_algorithm='norm', 
+                callbacks=cbs)
+
+    trainer.fit(model=DistillModule(model=distill_emb, tokenizer=tokenizer, **hparam),
+                train_dataloaders=train_dataloader, val_dataloaders=test_dataloader)
+
+    # After training, optionally push the model to Hugging Face Hub
+    # Requires: `huggingface_hub` installed and HF authentication done (`huggingface-cli login`)
+    repo_id = hparam.get("hf_repo_id", None)
+    if repo_id is not None:
+        try:
+
+            api = HfApi()
+            create_repo(
+                repo_id=repo_id,
+                private=True,
+                exist_ok=True,
+            )
+
+            # Save model and tokenizer locally in a temp directory
+            save_dir = trainer.model.best_task_performance['path']
+            
+
+            api.upload_folder(
+                folder_path=save_dir,
+                repo_id=repo_id,
+            )
+            print(f"Pushed model to Hugging Face Hub: {repo_id}")
+        except Exception as e:
+            print(f"Failed to push model to Hugging Face Hub: {e}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -310,6 +351,12 @@ if __name__ == '__main__':
     parser.add_argument("--run_name", type=str, default=None)
     # task_eval_every
     parser.add_argument("--task_eval_every", type=int, default=8)
+    # repo id
+    parser.add_argument("--hf_repo_id", type=str, default=None)
+    # size
+    parser.add_argument("--size", type=str, default=None)
+    # activation
+    parser.add_argument("--activation", type=str, default='relu')
 
     args = parser.parse_args()
     hparam = vars(args)

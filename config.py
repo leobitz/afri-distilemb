@@ -41,6 +41,7 @@ class DistillEmbConfig(PretrainedConfig):
         embedding_size=512,
         use_tanh=False,
         use_normalize=False,
+        activation="relu",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -53,6 +54,7 @@ class DistillEmbConfig(PretrainedConfig):
         self.embedding_size = embedding_size
         self.use_tanh = use_tanh
         self.use_normalize = use_normalize
+        self.activation = activation
 
 
 

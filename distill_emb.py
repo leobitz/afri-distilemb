@@ -4,6 +4,15 @@ from config import DistillEmbConfig
 import numpy as np
 from transformers import PreTrainedModel
 
+ACTIVATION_FUNCS = {
+    "relu": nn.ReLU,
+    "tanh": nn.Tanh,
+    "gelu": nn.GELU,
+    "silu": nn.SiLU,
+    "sigmoid": nn.Sigmoid,
+    "leaky_relu": nn.LeakyReLU,
+}
+
 class DistillEmbSmall(nn.Module):
     
     def __init__(self, config):
@@ -18,7 +27,7 @@ class DistillEmbSmall(nn.Module):
         self.pool = nn.MaxPool1d(2, 2)
         self.output_layer = nn.Linear(512, 512)
 
-        self.activation = nn.ReLU()
+        self.activation = ACTIVATION_FUNCS[config.activation]()
         self.tanh = nn.Tanh()
 
         self.norm0 = nn.LayerNorm([self.config.num_input_chars, 64])
@@ -30,7 +39,7 @@ class DistillEmbSmall(nn.Module):
 
         self.dropout = nn.Dropout(config.distill_dropout)
     
-    def embed(self, x):
+    def forward(self, x):
         x = self.embedding(x)
         x = self.dropout(x)
         x = self.norm0(x)
@@ -62,18 +71,6 @@ class DistillEmbSmall(nn.Module):
 
         return x
         
-    def forward(self, input_ids: torch.Tensor, **kwargs):
-        x = input_ids
-        assert len(x.shape) in [2, 3], "Input tensor must be of shape (B, S) or (B, S, N)"
-        if len(x.shape) == 2:
-            return self.tanh(self.embed(x))
-        
-        b, s, n = x.shape
-        x = x.view(b* s, n)
-        x = self.tanh(self.embed(x))
-        x = x.view((b, s, -1))
-        return x
-
 
 class DistillEmbBase(nn.Module):
     
@@ -90,8 +87,7 @@ class DistillEmbBase(nn.Module):
         self.pool = nn.MaxPool1d(2, 2)
         self.output_layer = nn.Linear(512, 512)
 
-        self.activation = nn.ReLU()
-        self.tanh = nn.Tanh() if config.use_tanh else nn.Identity()
+        self.activation = ACTIVATION_FUNCS[config.activation]()
 
         self.norm0 = nn.LayerNorm([self.config.num_input_chars, 128])
         self.norm1 = nn.LayerNorm([128, 62])
@@ -100,11 +96,11 @@ class DistillEmbBase(nn.Module):
         self.norm4 = nn.LayerNorm([448, 5])
         self.norm5 = nn.LayerNorm([512, 1])
         self.norm6 = nn.LayerNorm(512)
-        self.output_norm = nn.LayerNorm(512) if config.use_normalize else nn.Identity()
+        
 
         self.dropout = nn.Dropout(config.distill_dropout)
     
-    def embed(self, x):
+    def forward(self, x):
         x = self.embedding(x)
         x = self.dropout(x)
         x = self.norm0(x)
@@ -147,22 +143,6 @@ class DistillEmbBase(nn.Module):
 
         return x
         
-    def forward(self, input_ids: torch.Tensor, **kwargs):
-        x = input_ids
-        assert len(x.shape) in [2, 3], "Input tensor must be of shape (B, S) or (B, S, N)"
-        if len(x.shape) == 2:
-            x = self.embed(x)
-            x = self.output_norm(x)
-            return self.tanh(x)
-        
-        b, s, n = x.shape
-        x = x.view(b* s, n)
-        x = self.embed(x)
-        x = self.output_norm(x)
-        x = self.tanh(x)
-        x = x.view((b, s, -1))
-        return x
-
 class DistillEmb(PreTrainedModel):
     def __init__(self, config: DistillEmbConfig):
         super(DistillEmb, self).__init__(config)
@@ -170,10 +150,24 @@ class DistillEmb(PreTrainedModel):
             self.encoder = DistillEmbSmall(config)
         else:
             self.encoder = DistillEmbBase(config)
-        self.scale = nn.Parameter(torch.tensor(1.0))
-
+        self.output_norm = nn.LayerNorm(512) if config.use_normalize else nn.Identity()
+        self.tanh = nn.Tanh() if config.use_tanh else nn.Identity()
+    
     def forward(self, input_ids: torch.Tensor, **kwargs):
-        return self.encoder(input_ids, **kwargs) * self.scale
+        x = input_ids
+        assert len(x.shape) in [2, 3], "Input tensor must be of shape (B, S) or (B, S, N)"
+        if len(x.shape) == 2:
+            x = self.encoder(x)
+            x = self.output_norm(x)
+            return self.tanh(x)
+        
+        b, s, n = x.shape
+        x = x.view(b* s, n)
+        x = self.encoder(x)
+        x = self.output_norm(x)
+        x = self.tanh(x)
+        x = x.view((b, s, -1))
+        return x
 
 
 if __name__ == "__main__":
