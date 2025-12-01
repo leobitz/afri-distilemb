@@ -152,18 +152,21 @@ class DistillEmb(PreTrainedModel):
             self.encoder = DistillEmbBase(config)
         self.output_norm = nn.LayerNorm(512) if config.use_normalize else nn.Identity()
         self.tanh = nn.Tanh() if config.use_tanh else nn.Identity()
+        # scale
+        self.scale = nn.Parameter(torch.tensor(1.0))
+        
     
     def forward(self, input_ids: torch.Tensor, **kwargs):
         x = input_ids
         assert len(x.shape) in [2, 3], "Input tensor must be of shape (B, S) or (B, S, N)"
         if len(x.shape) == 2:
-            x = self.encoder(x)
+            x = self.encoder(x) * self.scale
             x = self.output_norm(x)
             return self.tanh(x)
         
         b, s, n = x.shape
         x = x.view(b* s, n)
-        x = self.encoder(x)
+        x = self.encoder(x) * self.scale
         x = self.output_norm(x)
         x = self.tanh(x)
         x = x.view((b, s, -1))
