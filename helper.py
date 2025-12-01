@@ -36,8 +36,6 @@ def load_corpus_words(path, vocab_set, line_prob=1.0, min_sent_length=8, vocab2l
     
     all_words = {}
     vocab2lang = {}
-    # langword2count = {}
-    # langword2count['punc'] = 0
     with open(path, encoding='utf-8') as f:
         for line in f:
             if random.random() < line_prob:
@@ -45,12 +43,11 @@ def load_corpus_words(path, vocab_set, line_prob=1.0, min_sent_length=8, vocab2l
                 lang, text = line.split('\t')
                 
                 if lang not in all_words:
-                    all_words[lang] = []
-                    # langword2count[lang] = 0
+                    all_words[lang] = set()
                     
                 words = text.split()
                 words = [word for word in words if word in vocab_set]
-                all_words[lang] += words
+                all_words[lang] |= set(words)
                 
                 for word in words:
                     if word not in vocab2lang:
@@ -60,21 +57,18 @@ def load_corpus_words(path, vocab_set, line_prob=1.0, min_sent_length=8, vocab2l
                         if 'punc' not in vocab2lang[word]:
                             vocab2lang[word]['punc'] = 0
                         vocab2lang[word]['punc'] += 1
-                        # langword2count['punc'] += 1
                     else:
                         if lang not in vocab2lang[word]:
                             vocab2lang[word][lang] = 0
                         vocab2lang[word][lang] += 1
-                        # langword2count[lang] += 1
     
     # select the language for each vocab with highest count
     for word in vocab2lang:
         langs = vocab2lang[word]
         lang = max(langs, key=langs.get)
         vocab2lang[word] = lang
-    
-    # temp = sum(langword2count.values())
-    # langword2count = {k: v / temp for k, v in langword2count.items()}
+    for lang in all_words:
+        all_words[lang] = list(all_words[lang])
     if lang2word_file is not None and vocab2lang_file is not None:
         json.dump(vocab2lang, open(vocab2lang_file, 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
         json.dump(all_words, open(lang2word_file, 'w', encoding='utf-8'), ensure_ascii=False, indent=4)

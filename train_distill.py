@@ -45,6 +45,7 @@ class DistillModule(L.LightningModule):
         
         self.triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2)
         self.training_step_outputs = []
+        self.best_task_performance = {}
 
     def training_step(self, batch, batch_idx):
 
@@ -123,7 +124,7 @@ class DistillModule(L.LightningModule):
     def _extrinsic_eval(self, current_epoch):
         train_mode = self.model.training
         self.model.eval()  # Set the model to evaluation mode
-        if current_epoch % 8 == 0:
+        if current_epoch % self.hparams.task_eval_every == 0:
             model = self.model
             tokenizer = self.tokenizer
             classifier = KNNTextClassifier(tokenizer, model=model)
@@ -153,14 +154,22 @@ class DistillModule(L.LightningModule):
             self.log("news_f1", news_f1)
             self.log("retrieval_acc", ret_acc)
             self.log("task-average-f1", (sent_f1 + news_f1 + ret_acc) / 3.0)
+            
+            avg_score = (sent_f1 + news_f1 + ret_acc) / 3.0
+            current_best = self.best_task_performance.get("task-average-f1", float("-inf"))
+            if avg_score > current_best:
+                self.best_task_performance = {
+                    "sent_f1": sent_f1,
+                    "news_f1": news_f1,
+                    "retrieval_acc": ret_acc,
+                    "task-average-f1": (sent_f1 + news_f1 + ret_acc) / 3.0
+                }
+                ckpt_path = f"logs/{self.hparams.run_name}/best_avg_epoch_{current_epoch}.ckpt"
+                self.model.save_pretrained(ckpt_path)
+
         self.model.train(train_mode)  # Set the model back to training mode if it was in training mode before
     
 def main(hparam: dict):
-
-    # config = json.loads(open('distill_emb_v0.json').read())
-    # hparam = {k: v for k, v in config['train'].items()}
-    # for k, v in config['model'].items():
-    #     hparam[k] = v
     print("Loaded training config")
     tokenizer = Tokenizer('tokenizer/charset.json', 
                           max_word_length=12)
@@ -179,104 +188,104 @@ def main(hparam: dict):
                                        lang2word_file='pretrained-data/lang2word.json',
                                        vocab2lang_file='pretrained-data/vocab2lang.json')
     
-    # intersection of vocab and vocab2lang
-    vocab = vocab & set(vocab2lang.keys())
+#     # intersection of vocab and vocab2lang
+#     vocab = vocab & set(vocab2lang.keys())
     
-    vocab_list = list(vocab)
-    np.random.shuffle(vocab_list)
-    train_size = int(len(vocab) * hparam['train_ratio'])
-    train_vocab = vocab_list[:train_size]
-    test_vocab = vocab_list[train_size:]
+#     vocab_list = list(vocab)
+#     np.random.shuffle(vocab_list)
+#     train_size = int(len(vocab) * hparam['train_ratio'])
+#     train_vocab = vocab_list[:train_size]
+#     test_vocab = vocab_list[train_size:]
     
-    print("Finished loading corpus", len(sentence_words), sentence_words.keys())
-    
-    
-    train_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(train_vocab))}
-    train_vocab2index = {v: k for k, v in enumerate(sorted(train_vocab))}
-    test_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(test_vocab))}
-    test_vocab2index = {v: k for k, v in enumerate(sorted(test_vocab))}
+#     print("Finished loading corpus", len(sentence_words), sentence_words.keys())
     
     
-    train_words = {}
-    test_words = {}
-    for lang in sentence_words.keys():
-        train_words[lang] = []
-        test_words[lang] = []
-        for word in sentence_words[lang]:
-            if word in train_vocab2index:
-                train_words[lang].append(train_vocab2index[word])
-            elif word in test_vocab2index:
-                test_words[lang].append(test_vocab2index[word])
+#     train_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(train_vocab))}
+#     train_vocab2index = {v: k for k, v in enumerate(sorted(train_vocab))}
+#     test_index2vocab = {k: [v, vocab2lang[v]] for k, v in enumerate(sorted(test_vocab))}
+#     test_vocab2index = {v: k for k, v in enumerate(sorted(test_vocab))}
+    
+    
+#     train_words = {}
+#     test_words = {}
+#     for lang in sentence_words.keys():
+#         train_words[lang] = []
+#         test_words[lang] = []
+#         for word in sentence_words[lang]:
+#             if word in train_vocab2index:
+#                 train_words[lang].append(train_vocab2index[word])
+#             elif word in test_vocab2index:
+#                 test_words[lang].append(test_vocab2index[word])
                 
-    print("# of train words: ", len(train_words))
-    print("# of test words: ", len(test_words))
-    print("# of train vocab: ", len(train_vocab))
-    print("# of test vocab: ", len(test_vocab))
-    print(train_words.keys())
-    print(test_words.keys())
+#     print("# of train words: ", len(train_words))
+#     print("# of test words: ", len(test_words))
+#     print("# of train vocab: ", len(train_vocab))
+#     print("# of test vocab: ", len(test_vocab))
+#     print(train_words.keys())
+#     print(test_words.keys())
 
-    train_dataset = LangDistillDataset(sentence_words=train_words,
-                                int2vocab=train_index2vocab,  
-                                w2v_vectors=w2v_emb, 
-                                tokenizer=tokenizer, 
-                                neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
+#     train_dataset = LangDistillDataset(sentence_words=train_words,
+#                                 int2vocab=train_index2vocab,  
+#                                 w2v_vectors=w2v_emb, 
+#                                 tokenizer=tokenizer, 
+#                                 neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
 
-    test_dataset = LangDistillDataset(sentence_words=test_words,  
-                                  int2vocab=test_index2vocab,
-                                    w2v_vectors=w2v_emb, 
-                                    tokenizer=tokenizer, 
-                                    neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
+#     test_dataset = LangDistillDataset(sentence_words=test_words,  
+#                                   int2vocab=test_index2vocab,
+#                                     w2v_vectors=w2v_emb, 
+#                                     tokenizer=tokenizer, 
+#                                     neg_seq_len=hparam['neg_seq_len'], top_k_negatives=3)
 
-    total_iteration = hparam['max_epochs'] * len(train_dataset) // hparam['batch_size']
-    hparam['total_iteration'] = total_iteration
-    train_dataloader = DataLoader(
-        train_dataset, 
-        num_workers=4, 
-        pin_memory=True,
-        shuffle=True,  
-        batch_size=hparam['batch_size'])
-    test_dataloader = DataLoader(
-        test_dataset, batch_size=hparam['batch_size'], num_workers=2, pin_memory=True, shuffle=False)
+#     total_iteration = hparam['max_epochs'] * len(train_dataset) // hparam['batch_size']
+#     hparam['total_iteration'] = total_iteration
+#     train_dataloader = DataLoader(
+#         train_dataset, 
+#         num_workers=4, 
+#         pin_memory=True,
+#         shuffle=True,  
+#         batch_size=hparam['batch_size'])
+#     test_dataloader = DataLoader(
+#         test_dataset, batch_size=hparam['batch_size'], num_workers=2, pin_memory=True, shuffle=False)
 
-    config = DistillEmbConfig(
-        num_input_chars=tokenizer.max_word_length,  # number of characters in each token
-        char_vocab_size=tokenizer.char_vocab_size,
-        size="base",
-        distill_dropout=hparam['dropout'],
-        use_normalize=hparam['normalize'],
-        use_tanh=hparam['use_tanh']
-    )
-    distill_emb = DistillEmb(config)
+#     config = DistillEmbConfig(
+#         num_input_chars=tokenizer.max_word_length,  # number of characters in each token
+#         char_vocab_size=tokenizer.char_vocab_size,
+#         size="base",
+#         distill_dropout=hparam['dropout'],
+#         use_normalize=hparam['normalize'],
+#         use_tanh=hparam['use_tanh']
+#     )
+#     distill_emb = DistillEmb(config)
     
 
-    cbs = []
-    checkpoint_callback = ModelCheckpoint(
-        save_top_k=1,
-        monitor="epoch_val_loss",
-        mode="min",
-        dirpath="logs/distill_emb_v0",
-        filename="distill_emb_v0-{epoch:02d}-{epoch_val_loss:.2f}",
-    )
+#     cbs = []
+#     checkpoint_callback = ModelCheckpoint(
+#         save_top_k=1,
+#         monitor="epoch_val_loss",
+#         mode="min",
+#         dirpath="logs/distill_emb_v0",
+#         filename="distill_emb_v0-{epoch:02d}-{epoch_val_loss:.2f}",
+#     )
 
-    logger = WandbLogger(log_model="all", 
-                    save_dir="logs/", 
-                    name=hparam['run_name'], 
-                    project="distill_emb", 
-                    entity="leobitz")
-    # logger = TensorBoardLogger("logs", name="distill_emb_v0")
+#     logger = WandbLogger(log_model="all", 
+#                     save_dir="logs/", 
+#                     name=hparam['run_name'], 
+#                     project="distill_emb", 
+#                     entity="leobitz")
+#     # logger = TensorBoardLogger("logs", name="distill_emb_v0")
     
     
-    cbs.append(checkpoint_callback)
-    trainer = L.Trainer(
-                max_epochs=hparam['max_epochs'], 
-                logger=logger, 
-                log_every_n_steps=1,
-                gradient_clip_val=hparam['clip_grad_norm'],
-                gradient_clip_algorithm='norm', 
-                callbacks=cbs)
+#     cbs.append(checkpoint_callback)
+#     trainer = L.Trainer(
+#                 max_epochs=hparam['max_epochs'], 
+#                 logger=logger, 
+#                 log_every_n_steps=1,
+#                 gradient_clip_val=hparam['clip_grad_norm'],
+#                 gradient_clip_algorithm='norm', 
+#                 callbacks=cbs)
 
-    trainer.fit(model=DistillModule(model=distill_emb, tokenizer=tokenizer, **hparam),
-                train_dataloaders=train_dataloader, val_dataloaders=test_dataloader)
+#     trainer.fit(model=DistillModule(model=distill_emb, tokenizer=tokenizer, **hparam),
+#                 train_dataloaders=train_dataloader, val_dataloaders=test_dataloader)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -299,6 +308,8 @@ if __name__ == '__main__':
     parser.add_argument("--max_word_piece", type=int, default=10)
     # run_name
     parser.add_argument("--run_name", type=str, default=None)
+    # task_eval_every
+    parser.add_argument("--task_eval_every", type=int, default=8)
 
     args = parser.parse_args()
     hparam = vars(args)
