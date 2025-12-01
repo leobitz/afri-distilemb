@@ -170,7 +170,7 @@ class DistillEmb(PreTrainedModel):
             self.encoder = DistillEmbSmall(config)
         else:
             self.encoder = DistillEmbBase(config)
-        self.scale = nn.Parameter(torch.tensor(10.0))
+        self.scale = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, input_ids: torch.Tensor, **kwargs):
         return self.encoder(input_ids, **kwargs) * self.scale

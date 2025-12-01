@@ -8,7 +8,9 @@
         "train_ratio": 0.99,
         "vector_load_ratio": 1.0,
         "sentence_load_ratio": 1.0,
-        "char_emb_size": 64
+        "char_emb_size": 64,
+        "use_tanh": false,
+        "normalize": true
     },
     "train": {
         "batch_size": 512,

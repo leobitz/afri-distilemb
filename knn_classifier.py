@@ -25,6 +25,7 @@ class KNNTextClassifier:
             k: int = 5,
             metric: str = "cosine",
             n_jobs: int = -1,
+            normalize_embeddings: bool = True,
             device: str = "cuda"
     ):
         """
@@ -96,6 +97,8 @@ class KNNTextClassifier:
         # ---------- 1. Embed & fit ----------
         X_train = _batch_embed(train_df["text"])
         y_train = train_df["label"].values  # string or int labels both fine
+        if normalize_embeddings:
+            X_train = X_train / np.linalg.norm(X_train, axis=1, keepdims=True)
 
         knn = KNeighborsClassifier(
             n_neighbors=k, metric=metric, n_jobs=n_jobs
@@ -104,6 +107,8 @@ class KNNTextClassifier:
 
         # ---------- 2. Embed test & predict ----------
         X_test = _batch_embed(test_df["text"])
+        if normalize_embeddings:
+            X_test = X_test / np.linalg.norm(X_test, axis=1, keepdims=True)
         y_test = test_df["label"].values
         y_pred = knn.predict(X_test)
         test_df['pred'] = y_pred
