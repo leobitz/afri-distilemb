@@ -159,15 +159,15 @@ class DistillEmb(PreTrainedModel):
         x = input_ids
         assert len(x.shape) in [2, 3], "Input tensor must be of shape (B, S) or (B, S, N)"
         if len(x.shape) == 2:
-            x = self.encoder(x) * self.scale
+            x = self.encoder(x) 
             x = self.output_norm(x)
-            return self.tanh(x)
+            return self.tanh(x) * self.scale
         
         b, s, n = x.shape
         x = x.view(b* s, n)
-        x = self.encoder(x) * self.scale
+        x = self.encoder(x) 
         x = self.output_norm(x)
-        x = self.tanh(x)
+        x = self.tanh(x) * self.scale
         x = x.view((b, s, -1))
         return x
 

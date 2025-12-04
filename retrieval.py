@@ -132,8 +132,8 @@ def build_json_pairs(
             embeddings = encoder.encode([query_text] + pool)
             query_emb, cand_embs = embeddings[0], embeddings[1:]
             # apply tanh to embeddings
-            query_emb = np.tanh(query_emb)
-            cand_embs = np.tanh(cand_embs)
+            # query_emb = np.tanh(query_emb)
+            # cand_embs = np.tanh(cand_embs)
             # 5) Pick K most-similar headlines
             sims = cosine_similarity([query_emb], cand_embs)[0]
             top_idx = sims.argsort()[::-1][:k_top]

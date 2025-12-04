@@ -22,7 +22,7 @@ from data_loader import load_news_dataset
 import pandas as pd
 from retrieval import build_json_pairs, top1_accuracy
 from torch.nn import functional as F
-from loss_fns import generate_similars_from_embeddings, info_nce_loss
+from loss_fns import generate_similars_from_embeddings, info_nce_loss, info_nce_loss_v2
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.nn import functional as F
 from helper import load_word_embeddings, load_corpus_words
@@ -31,11 +31,9 @@ import argparse
 import os
 from huggingface_hub import HfApi, create_repo
 import multiprocessing as mp
+from transformers import set_seed
 
-random.seed(1000)
-torch.random.manual_seed(10000)
-np.random.seed(1000)
-
+set_seed(1000)
 
 class DistillModule(L.LightningModule):
     def __init__(self, model: DistillEmb, tokenizer: Tokenizer, **kwargs):
@@ -55,21 +53,21 @@ class DistillModule(L.LightningModule):
         x, pos_w2v, neg_w2v = batch
         z = self.model(x).view(pos_w2v.shape)
 
-        if self.normalize:
-            z = F.normalize(z, p=2, dim=-1)
-            pos_w2v = F.normalize(pos_w2v, p=2, dim=-1)
-            if neg_w2v != None and len(neg_w2v.shape) == 3:
-                b, s, f = neg_w2v.shape
-                neg_w2v = neg_w2v.view(b * s, f)
-                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
-                neg_w2v = neg_w2v.view(b, s, f)
-            elif neg_w2v != None and len(neg_w2v.shape) == 2:
-                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
+        # if self.normalize:
+        #     z = F.normalize(z, p=2, dim=-1)
+        #     pos_w2v = F.normalize(pos_w2v, p=2, dim=-1)
+        #     if neg_w2v != None and len(neg_w2v.shape) == 3:
+        #         b, s, f = neg_w2v.shape
+        #         neg_w2v = neg_w2v.view(b * s, f)
+        #         neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
+        #         neg_w2v = neg_w2v.view(b, s, f)
+        #     elif neg_w2v != None and len(neg_w2v.shape) == 2:
+        #         neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
         
-        if neg_w2v != None and len(neg_w2v.shape) == 2:
-            loss = self.triplet_loss(z, pos_w2v, neg_w2v)
-        else:
-            loss = info_nce_loss(z, pos_w2v, neg_w2v, temperature=self.temperature)
+        # if neg_w2v != None and len(neg_w2v.shape) == 2:
+        #     loss = self.triplet_loss(z, pos_w2v, neg_w2v)
+        # else:
+        loss = info_nce_loss(z, pos_w2v, neg_w2v, temperature=self.temperature)
         self.training_step_outputs.append(loss)
         self.log("train_loss", loss)
         return {"loss": loss}
@@ -85,23 +83,22 @@ class DistillModule(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, pos_w2v, neg_w2v = batch
-
         z = self.model(x).view(pos_w2v.shape)
-        if self.normalize:
-            z = F.normalize(z, p=2, dim=-1)
-            pos_w2v = F.normalize(pos_w2v, p=2, dim=-1)
-            if neg_w2v != None and len(neg_w2v.shape) == 3:
-                b, s, f = neg_w2v.shape
-                neg_w2v = neg_w2v.view(b * s, f)
-                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
-                neg_w2v = neg_w2v.view(b, s, f)
-            elif neg_w2v != None and len(neg_w2v.shape) == 2:
-                neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
+        # if self.normalize:
+        #     z = F.normalize(z, p=2, dim=-1)
+        #     pos_w2v = F.normalize(pos_w2v, p=2, dim=-1)
+        #     if neg_w2v != None and len(neg_w2v.shape) == 3:
+        #         b, s, f = neg_w2v.shape
+        #         neg_w2v = neg_w2v.view(b * s, f)
+        #         neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
+        #         neg_w2v = neg_w2v.view(b, s, f)
+        #     elif neg_w2v != None and len(neg_w2v.shape) == 2:
+        #         neg_w2v = F.normalize(neg_w2v, p=2, dim=-1)
         
-        if neg_w2v != None and len(neg_w2v.shape) == 2:
-            loss = self.triplet_loss(z, pos_w2v, neg_w2v)
-        else:
-            loss = info_nce_loss(z, pos_w2v, neg_w2v, temperature=self.temperature)
+        # if neg_w2v != None and len(neg_w2v.shape) == 2:
+        #     loss = self.triplet_loss(z, pos_w2v, neg_w2v)
+        # else:
+        loss = info_nce_loss(z, pos_w2v, neg_w2v, temperature=self.temperature)
         self.log("epoch_val_loss", loss)
 
     
@@ -138,23 +135,23 @@ class DistillModule(L.LightningModule):
             sent_df = df.groupby('lang').apply(lambda x: x.sample(min_count, random_state=42)).reset_index(drop=True)
             sent_train_df = sent_df.sample(frac=0.8, random_state=42)
             sent_test_df = sent_df.drop(sent_train_df.index)
-            sent_f1, sent_acc, sent_per_lang, sent_test_df = classifier.classifiy(train_df=sent_train_df, test_df=sent_test_df, k=5, batch_size=8, model=None, tokenizer=None)
+            sent_f1, sent_acc, sent_per_lang, sent_test_df = classifier.classifiy(train_df=sent_train_df, test_df=sent_test_df, k=5, batch_size=32, model=None, tokenizer=None)
 
             df, classes = load_news_dataset()
             min_count = min(df['lang'].value_counts().min(), 250)
             news_df = df.groupby('lang').apply(lambda x: x.sample(min_count, random_state=42)).reset_index(drop=True)
             news_train_df = news_df.sample(frac=0.8, random_state=42)
             news_test_df = news_df.drop(news_train_df.index)
-            news_f1, news_acc, news_per_lang, news_test_df = classifier.classifiy(train_df=news_train_df, test_df=news_test_df, k=5, batch_size=8, model=None, tokenizer=None)
+            news_f1, news_acc, news_per_lang, news_test_df = classifier.classifiy(train_df=news_train_df, test_df=news_test_df, k=5, batch_size=32, model=None, tokenizer=None)
 
             df = pd.read_json('downstream-data/news_result.json')
             d = df.to_dict(orient='records')
-            ret_acc, _, ret_per_lang = top1_accuracy(d, batch_size=8, model=model, tokenizer=tokenizer)
-
+            ret_acc, _, ret_per_lang = top1_accuracy(d, batch_size=32, model=model, tokenizer=tokenizer)
             self.log("sent_f1",sent_f1)
             self.log("news_f1", news_f1)
             self.log("retrieval_acc", ret_acc)
             self.log("task-average-f1", (sent_f1 + news_f1 + ret_acc) / 3.0)
+            self.log("emb-scale",self.model.scale.item())
             
             avg_score = (sent_f1 + news_f1 + ret_acc) / 3.0
             current_best = self.best_task_performance.get("task-average-f1", float("-inf"))
@@ -352,7 +349,7 @@ if __name__ == '__main__':
     # run_name
     parser.add_argument("--run_name", type=str, default=None)
     # task_eval_every
-    parser.add_argument("--task_eval_every", type=int, default=4)
+    parser.add_argument("--task_eval_every", type=int, default=8)
     # repo id
     parser.add_argument("--hf_repo_id", type=str, default=None)
     # size

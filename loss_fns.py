@@ -56,6 +56,9 @@ def info_nce_loss(anchor, positive, negatives=None, temperature=0.1):
     
     if negatives is None:
         negatives = generate_similars_from_embeddings(positive.unsqueeze(0), 3).squeeze(0)
+    else:
+        if negatives.dim() != 3:
+            negatives = negatives.unsqueeze(1) # (b, 1, d)
     
     # Compute similarities
     sim_positive = F.cosine_similarity(anchor, positive, dim=-1)  # Similarity with positive
@@ -82,6 +85,8 @@ def info_nce_loss_v2(anchor, positive, negatives, attention_mask=None, temperatu
     # positive.shape = (b, s, d)
     # negatives.shape = (b, s, n, d)
     # attention_mask.shape = (b, s)
+    print(anchor.shape, positive.shape, negatives.shape)
+    negatives = negatives.permute(0, 1, 3, 2)  # (b, s, n, d) -> (b, s, n, d)
     
     # Compute similarities
     # sim_positive.shape = (b, s)
