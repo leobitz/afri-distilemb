@@ -16,8 +16,12 @@ import json
 
 class CharTokenizer:
 
-    def __init__(self, charset_file_path: str, max_word_length: int = 12, word2id=None):
-        charset = json.load(open(charset_file_path, 'r', encoding='utf-8'))
+    def __init__(self, charset_file_path, max_word_length: int = 12, word2id=None, charset: dict = None):
+        if charset_file_path is None and charset is None:
+            raise ValueError("Either charset_file_path or charset must be provided.")
+        if charset_file_path is not None:
+            charset = json.load(open(charset_file_path, 'r', encoding='utf-8'))
+        
         self.valid_char2id = charset['valid_char2id']
         self.valid_id2char = charset['valid_id2char']
         # cast the keys to int
@@ -34,6 +38,19 @@ class CharTokenizer:
         self.pad_char_id = self.valid_char2id[self.special_token2char['[PAD]']]
 
         self.set_word2id(word2id)
+    
+    @staticmethod
+    def from_pretrained(pretrained_directory: str):
+        """
+        Load the tokenizer from a directory.
+        """
+        # read tokenizer_config.json
+        with open(f"{pretrained_directory}/tokenizer_config.json", 'r', encoding='utf-8') as f:
+            tokenizer_config = json.load(f)
+        max_word_length = tokenizer_config['max_word_length']
+        word2id = None
+        charset = tokenizer_config['charset']
+        return CharTokenizer(None, max_word_length=max_word_length, word2id=word2id, charset=charset)
 
     @property
     def char_vocab_size(self) -> int:
@@ -366,10 +383,34 @@ class CharTokenizer:
             return_attention_mask:
                 (optional) Set to False to avoid returning attention mask (default: set to model specifics)
         """
-        if max_length is None:
-            max_length = max(len(ids) for ids in encoded_inputs['input_ids'])
         if padding_side is None:
             padding_side = "right"
+
+        if isinstance(encoded_inputs, list):
+            if len(encoded_inputs) == 0:
+                raise ValueError("encoded_inputs list is empty; cannot pad")
+            if isinstance(encoded_inputs[0], dict):
+                batched_inputs: Dict[str, List[Any]] = {}
+                for example in encoded_inputs:
+                    for key, value in example.items():
+                        batched_inputs.setdefault(key, []).append(value)
+                encoded_inputs = batched_inputs
+            else:
+                raise ValueError(
+                    "encoded_inputs must be a dict or list of dicts when padding"
+                )
+
+        if not isinstance(encoded_inputs, dict):
+            raise ValueError(
+                "encoded_inputs must be a dict or list of dicts when padding"
+            )
+
+        if max_length is None:
+            if 'input_ids' not in encoded_inputs:
+                raise ValueError(
+                    "input_ids must be provided to infer max_length when padding"
+                )
+            max_length = max(len(ids) for ids in encoded_inputs['input_ids'])
 
         if isinstance(padding, bool):
             if padding:
@@ -425,6 +466,32 @@ class CharTokenizer:
                             word_ids = ([self.word2id['[PAD]']] * (max_length - len(word_ids))) + word_ids
                     padded_word_ids.append(word_ids[:max_length])
                 encoded_inputs[key] = padded_word_ids
+
+        # Generate attention_mask if requested and not already present
+        # attention_mask shape: (B, S) where S is seq_length (number of words)
+        if return_attention_mask and 'attention_mask' not in encoded_inputs:
+            attention_mask = []
+            for ids in encoded_inputs['input_ids']:
+                # ids has shape (S, C) where S is seq_length, C is num_characters
+                # We create a mask of 1s for real tokens and 0s for padding
+                seq_len = len(ids)
+                mask = []
+                pad_token = self._encode_word('[PAD]')
+                for word_chars in ids:
+                    # Check if this word is a padding token
+                    if word_chars == pad_token:
+                        mask.append(0)
+                    else:
+                        mask.append(1)
+                attention_mask.append(mask)
+            encoded_inputs['attention_mask'] = attention_mask
+
+        if return_tensors in {"pt", "np"}:
+            tensorizer = torch.tensor if return_tensors == "pt" else np.array
+            for key, value in encoded_inputs.items():
+                if isinstance(value, list):
+                    encoded_inputs[key] = tensorizer(value)
+
         return encoded_inputs
 
     def save_pretrained(self, save_directory: str):

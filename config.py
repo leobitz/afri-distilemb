@@ -148,7 +148,8 @@ class DistillModelConfig(PretrainedConfig):
         classifier_dropout=None,
         embedding_type="bert", # 'distillemb', 'fasttext
         encoder_type="bert",  # 'bert', 'lstm'
-        distil_config: DistillEmbConfig = None,
+        distill_config: DistillEmbConfig = None,
+        distill_pretrained_model_name: str = None,
         **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
@@ -169,6 +170,7 @@ class DistillModelConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.classifier_dropout = classifier_dropout
         self.embedding_type = embedding_type
-        self.distill_config = distil_config
+        self.distill_config = distill_config
         self.encoder_type = encoder_type
+        self.distill_pretrained_model_name = distill_pretrained_model_name
 

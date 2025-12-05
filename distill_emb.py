@@ -143,6 +143,11 @@ class DistillEmbBase(nn.Module):
         return x
         
 class DistillEmb(PreTrainedModel):
+    config_class = DistillEmbConfig
+    base_model_prefix = "distillemb"
+    supports_gradient_checkpointing = True
+    _supports_sdpa = False
+
     def __init__(self, config: DistillEmbConfig):
         super(DistillEmb, self).__init__(config)
         if config.size == "small":

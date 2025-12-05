@@ -255,7 +255,7 @@ class DistilEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.word_embeddings = DistillEmb(config.distill_config)
+        self.word_embeddings = DistillEmb.from_pretrained(pretrained_model_name_or_path=config.distill_pretrained_model_name)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
         output_emb_size  = 512
@@ -1198,15 +1198,34 @@ class LSTMEncoder(nn.Module):
             all_hidden_states = all_hidden_states + (hidden_states,)
 
         # Optionally use attention_mask to compute sequence lengths for packing
+        # The attention_mask from BertModel is extended to 4D (B, 1, 1, S) or (B, 1, S, S)
+        # We need to convert it back to 2D (B, S) for LSTM packing
         lengths = None
         if attention_mask is not None:
-            lengths = attention_mask.sum(dim=1).cpu()
-            packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
-            packed_output, _ = self.lstm(packed)
-            output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+            # Handle extended attention mask (4D) by extracting 2D mask
+            if attention_mask.dim() == 4:
+                # Extended mask has shape (B, 1, 1, S) or (B, 1, S, S)
+                # Values are 0.0 for attended positions and -inf for masked positions
+                # Convert back to binary mask: 0.0 -> 1, -inf -> 0
+                mask_2d = (attention_mask[:, 0, 0, :] == 0.0).long()
+            elif attention_mask.dim() == 2:
+                mask_2d = attention_mask
+            else:
+                # Fallback: don't use packing
+                mask_2d = None
+            
+            if mask_2d is not None:
+                lengths = mask_2d.sum(dim=1).cpu()
+                # Ensure lengths are at least 1 to avoid empty sequences
+                lengths = lengths.clamp(min=1)
+                packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
+                packed_output, _ = self.lstm(packed)
+                output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+            else:
+                output, _ = self.lstm(hidden_states)
         else:
             output, _ = self.lstm(hidden_states)
-            output = self.output_mapper(output)
+        output = self.output_mapper(output)
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (output,)
 
@@ -1255,7 +1274,7 @@ class BertModel(BertPreTrainedModel):
                 f"Unknown embedding type {config.embedding_type}. Supported types are: 'bert', 'distill', 'fasttext'."
             )
         ENCODER_CLASS = LSTMEncoder if config.encoder_type == "lstm" else BertEncoder
-        self.encoder = BertEncoder(config)
+        self.encoder = ENCODER_CLASS(config)
 
         self.pooler = BertPooler(config) if add_pooling_layer else None
 
@@ -1375,7 +1394,6 @@ class BertModel(BertPreTrainedModel):
             inputs_embeds=inputs_embeds,
             past_key_values_length=past_key_values_length,
         )
-
         if attention_mask is None:
             attention_mask = torch.ones((batch_size, seq_length + past_key_values_length), device=device)
 
