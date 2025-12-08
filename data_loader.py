@@ -52,23 +52,33 @@ def load_news_dataset():
     unque_labels = set(all_data['label'].unique())
     return all_data, sorted(unque_labels)
 
-def load_ner_dataset():
-    if not os.path.exists(f'{data_path}/masakhanener.parquet'):
+def load_ner_dataset(dataset='masakhaner2'):
+    if not os.path.exists(f'{data_path}/{dataset}.parquet'):
         langs = ['bam', 'bbj', 'ewe', 'fon', 'hau', 'ibo', 'kin', 'lug', 'luo', 'mos', 'nya', 'pcm', 'sna', 'swa', 'tsn', 'twi', 'wol', 'xho', 'yor', 'zul']
+        # langs = ['amh', 'hau', 'ibo', 'kin', 'lug', 'luo', 'pcm', 'swa', 'wol', 'yor']
         dss = []
+        train_frames, test_frames, dev_frames = [], [], []
         for lang in langs:
-            data = load_dataset('masakhane/masakhaner2', lang, trust_remote_code=True) 
-            dss.append(data)
-        # Concatenate all datasets
-        train_data = pd.concat([data['train'].to_pandas() for data in dss], ignore_index=True)
-        test_data = pd.concat([data['test'].to_pandas() for data in dss], ignore_index=True)
-        dev_data = pd.concat([data['validation'].to_pandas() for data in dss], ignore_index=True)
+            data = load_dataset(f'masakhane/{dataset}', lang, trust_remote_code=True)
+            train_df = data['train'].to_pandas()
+            test_df = data['test'].to_pandas()
+            dev_df = data['validation'].to_pandas()
+            train_df['lang'] = lang
+            test_df['lang'] = lang
+            dev_df['lang'] = lang
+            train_frames.append(train_df)
+            test_frames.append(test_df)
+            dev_frames.append(dev_df)
+        train_data = pd.concat(train_frames, ignore_index=True)
+        test_data = pd.concat(test_frames, ignore_index=True)
+        dev_data = pd.concat(dev_frames, ignore_index=True)
         # Add split column
         train_data['split'] = 'train'
         test_data['split'] = 'test'
         dev_data['split'] = 'dev'
         # Concatenate all data
         all_data = pd.concat([train_data, test_data, dev_data], ignore_index=True)
+        
         # rename ner_tags column to labels
         all_data.rename(columns={'ner_tags': 'labels'}, inplace=True)
         print(f'Loaded {len(all_data)} rows from masakhanener columns {all_data.columns}')
@@ -86,14 +96,21 @@ def load_ner_dataset():
 def load_pos_dataset():
     if not os.path.exists(f'{data_path}/masakhapos.parquet'):
         langs = ['bam', 'bbj', 'ewe', 'fon', 'hau', 'ibo', 'kin', 'lug', 'luo', 'mos', 'nya', 'pcm', 'sna', 'swa', 'tsn', 'twi', 'wol', 'xho', 'yor', 'zul']
-        dss = []
+        train_frames, test_frames, dev_frames = [], [], []
         for lang in langs:
-            data = load_dataset('masakhane/masakhapos', lang, trust_remote_code=True) 
-            dss.append(data)
-        # Concatenate all datasets
-        train_data = pd.concat([data['train'].to_pandas() for data in dss], ignore_index=True)
-        test_data = pd.concat([data['test'].to_pandas() for data in dss], ignore_index=True)
-        dev_data = pd.concat([data['validation'].to_pandas() for data in dss], ignore_index=True)
+            data = load_dataset('masakhane/masakhapos', lang, trust_remote_code=True)
+            train_df = data['train'].to_pandas()
+            test_df = data['test'].to_pandas()
+            dev_df = data['validation'].to_pandas()
+            train_df['lang'] = lang
+            test_df['lang'] = lang
+            dev_df['lang'] = lang
+            train_frames.append(train_df)
+            test_frames.append(test_df)
+            dev_frames.append(dev_df)
+        train_data = pd.concat(train_frames, ignore_index=True)
+        test_data = pd.concat(test_frames, ignore_index=True)
+        dev_data = pd.concat(dev_frames, ignore_index=True)
         # Add split column
         train_data['split'] = 'train'
         test_data['split'] = 'test'

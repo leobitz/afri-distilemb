@@ -489,8 +489,9 @@ class CharTokenizer:
         if return_tensors in {"pt", "np"}:
             tensorizer = torch.tensor if return_tensors == "pt" else np.array
             for key, value in encoded_inputs.items():
-                if isinstance(value, list):
-                    encoded_inputs[key] = tensorizer(value)
+                if key in ['input_ids', 'attention_mask']:
+                    if isinstance(value, list):
+                        encoded_inputs[key] = tensorizer(value)
 
         return encoded_inputs
 

@@ -1135,7 +1135,8 @@ class AttentionPooling(nn.Module):
         
         self.norm = nn.LayerNorm(config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
+        self.fc1 = nn.Linear(config.hidden_size, config.hidden_size*2)
+        self.fc2 = nn.Linear(config.hidden_size*2, config.hidden_size)
         self.tanh = nn.Tanh()
         
         # Learnable query vector for pooling
@@ -1173,7 +1174,10 @@ class AttentionPooling(nn.Module):
         
         # Output projection
         pooled_output = self.norm(context)
-        pooled_output = self.fc(pooled_output)
+        pooled_output = self.fc1(pooled_output)
+        pooled_output = torch.relu(pooled_output)
+        pooled_output = self.dropout(pooled_output)
+        pooled_output = self.fc2(pooled_output)
         pooled_output = self.tanh(pooled_output)
         
         return pooled_output
@@ -1183,14 +1187,17 @@ class LSTMEncoder(nn.Module):
         super().__init__()
         self.config = config
         bidirectional = not config.is_decoder
-        self.lstm = nn.LSTM(
-            input_size=config.hidden_size,
-            hidden_size=config.hidden_size // 2,
-            num_layers=config.num_hidden_layers,
-            batch_first=True,
-            dropout=config.hidden_dropout_prob if config.num_hidden_layers > 1 else 0,
-            bidirectional=bidirectional,  # LSTM is bidirectional for encoder
-        )
+        if config.num_hidden_layers > 0:
+            self.lstm = nn.LSTM(
+                input_size=config.hidden_size,
+                hidden_size=config.hidden_size // 2,
+                num_layers=config.num_hidden_layers,
+                batch_first=True,
+                dropout=config.hidden_dropout_prob if config.num_hidden_layers > 1 else 0,
+                bidirectional=bidirectional,  # LSTM is bidirectional for encoder
+            )
+        else:
+            self.lstm = nn.Identity()
         self.gradient_checkpointing = False
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         
@@ -1213,39 +1220,38 @@ class LSTMEncoder(nn.Module):
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
-        # Optionally use attention_mask to compute sequence lengths for packing
-        # The attention_mask from BertModel is extended to 4D (B, 1, 1, S) or (B, 1, S, S)
-        # We need to convert it back to 2D (B, S) for LSTM packing
-        lengths = None
-        if attention_mask is not None:
-            # Handle extended attention mask (4D) by extracting 2D mask
-            if attention_mask.dim() == 4:
-                # Extended mask has shape (B, 1, 1, S) or (B, 1, S, S)
-                # Values are 0.0 for attended positions and -inf for masked positions
-                # Convert back to binary mask: 0.0 -> 1, -inf -> 0
-                mask_2d = (attention_mask[:, 0, 0, :] == 0.0).long()
-            elif attention_mask.dim() == 2:
-                mask_2d = attention_mask
-            else:
-                # Fallback: don't use packing
-                mask_2d = None
-            
-            if mask_2d is not None:
-                lengths = mask_2d.sum(dim=1).cpu()
-                # Ensure lengths are at least 1 to avoid empty sequences
-                lengths = lengths.clamp(min=1)
-                packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
-                packed_output, (h, c) = self.lstm(packed)
-                output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+        if not isinstance(self.lstm, nn.Identity):
+            # Optionally use attention_mask to compute sequence lengths for packing
+            # The attention_mask from BertModel is extended to 4D (B, 1, 1, S) or (B, 1, S, S)
+            # We need to convert it back to 2D (B, S) for LSTM packing
+            lengths = None
+            if attention_mask is not None:
+                # Handle extended attention mask (4D) by extracting 2D mask
+                if attention_mask.dim() == 4:
+                    # Extended mask has shape (B, 1, 1, S) or (B, 1, S, S)
+                    # Values are 0.0 for attended positions and -inf for masked positions
+                    # Convert back to binary mask: 0.0 -> 1, -inf -> 0
+                    mask_2d = (attention_mask[:, 0, 0, :] == 0.0).long()
+                elif attention_mask.dim() == 2:
+                    mask_2d = attention_mask
+                else:
+                    # Fallback: don't use packing
+                    mask_2d = None
+                
+                if mask_2d is not None:
+                    lengths = mask_2d.sum(dim=1).cpu()
+                    # Ensure lengths are at least 1 to avoid empty sequences
+                    lengths = lengths.clamp(min=1)
+                    packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
+                    packed_output, (h, c) = self.lstm(packed)
+                    output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+                else:
+                    output, (h, c)  = self.lstm(hidden_states)
             else:
                 output, (h, c)  = self.lstm(hidden_states)
         else:
-            output, (h, c)  = self.lstm(hidden_states)
-
-
-        mixed = output + hidden_states
-
-        output = self.norm(mixed)
+            output = hidden_states
+        output = self.norm(output)
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states +  (output, )
@@ -2041,6 +2047,11 @@ class BertForSequenceClassification(BertPreTrainedModel):
         pooled_output = outputs[1]
 
         pooled_output = self.dropout(pooled_output)
+        batch_size = pooled_output.size(0)
+        flip_mask = torch.rand(batch_size, device=pooled_output.device) < 0.5
+        if flip_mask.any():
+            flipped = torch.flip(pooled_output, dims=(-1,))
+            pooled_output = torch.where(flip_mask.unsqueeze(-1), flipped, pooled_output)
         logits = self.classifier(pooled_output)
 
         loss = None
