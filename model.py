@@ -196,7 +196,7 @@ class BertEmbeddings(nn.Module):
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
-        self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
@@ -240,11 +240,11 @@ class BertEmbeddings(nn.Module):
             inputs_embeds = self.word_embeddings(input_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        embeddings = self.norm(inputs_embeds) + self.norm(token_type_embeddings)
+        embeddings = inputs_embeds + token_type_embeddings
         if self.position_embedding_type == "absolute":
             position_embeddings = self.position_embeddings(position_ids)
-            embeddings += self.norm(position_embeddings)
-        embeddings = self.norm(embeddings)
+            embeddings += position_embeddings
+        embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
 
@@ -262,7 +262,6 @@ class DistilEmbeddings(nn.Module):
         self.output_layer = None
         if output_emb_size != config.hidden_size:
             self.output_layer = nn.Sequential(
-                # nn.Dropout(config.hidden_dropout_prob),
                 nn.Linear(output_emb_size, config.hidden_size),
             )
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
@@ -321,8 +320,8 @@ class DistilEmbeddings(nn.Module):
         embeddings = inputs_embeds + token_type_embeddings
         if self.position_embedding_type == "absolute":
             position_embeddings = self.position_embeddings(position_ids)
-            embeddings += position_embeddings
-        embeddings = self.LayerNorm(embeddings)
+            embeddings +=position_embeddings
+        embeddings = embeddings
         embeddings = self.dropout(embeddings)
         return embeddings
 
@@ -1133,10 +1132,10 @@ class AttentionPooling(nn.Module):
         self.key = nn.Linear(config.hidden_size, config.hidden_size)
         self.value = nn.Linear(config.hidden_size, config.hidden_size)
         
-        self.norm = nn.LayerNorm(config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.fc1 = nn.Linear(config.hidden_size, config.hidden_size*2)
-        self.fc2 = nn.Linear(config.hidden_size*2, config.hidden_size)
+        self.fc1 = nn.Linear(config.hidden_size, config.hidden_size)
+        self.norm1 = nn.LayerNorm(config.hidden_size)
+        self.fc2 = nn.Linear(config.hidden_size, config.hidden_size)
         self.tanh = nn.Tanh()
         
         # Learnable query vector for pooling
@@ -1144,7 +1143,9 @@ class AttentionPooling(nn.Module):
     
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_len, hidden_size = hidden_states.shape
-        
+        hidden_states = self.fc1(hidden_states)
+        hidden_states = self.norm1(hidden_states)
+        hidden_states = self.dropout(hidden_states)
         # Expand pool query for batch
         query = self.pool_query.expand(batch_size, -1, -1)  # (B, 1, H)
         query = self.query(query)
@@ -1173,11 +1174,7 @@ class AttentionPooling(nn.Module):
         context = context.transpose(1, 2).contiguous().view(batch_size, hidden_size)
         
         # Output projection
-        pooled_output = self.norm(context)
-        pooled_output = self.fc1(pooled_output)
-        pooled_output = torch.relu(pooled_output)
-        pooled_output = self.dropout(pooled_output)
-        pooled_output = self.fc2(pooled_output)
+        pooled_output = self.fc2(context)
         pooled_output = self.tanh(pooled_output)
         
         return pooled_output
@@ -1199,11 +1196,6 @@ class LSTMEncoder(nn.Module):
         else:
             self.lstm = nn.Identity()
         self.gradient_checkpointing = False
-        self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
-        self.fc2 = nn.Linear(config.hidden_size, config.hidden_size)
-        self.distill_alpha = nn.Parameter(torch.tensor(1.0))
-        
 
     def forward(
         self,
@@ -1223,7 +1215,7 @@ class LSTMEncoder(nn.Module):
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
-        if not isinstance(self.lstm, nn.Identity):
+        if isinstance(self.lstm, nn.LSTM):
             # Optionally use attention_mask to compute sequence lengths for packing
             # The attention_mask from BertModel is extended to 4D (B, 1, 1, S) or (B, 1, S, S)
             # We need to convert it back to 2D (B, S) for LSTM packing
@@ -1253,7 +1245,6 @@ class LSTMEncoder(nn.Module):
             else:
                 output, (h, c)  = self.lstm(hidden_states)
 
-            output = self.fc(output)
         else:
             output = hidden_states
 
@@ -1430,52 +1421,6 @@ class BertModel(BertPreTrainedModel):
         if attention_mask is None:
             attention_mask = torch.ones((batch_size, seq_length + past_key_values_length), device=device)
 
-        # use_sdpa_attention_masks = (
-        #     self.attn_implementation == "sdpa"
-        #     and self.position_embedding_type == "absolute"
-        #     and head_mask is None
-        #     and not output_attentions
-        # )
-
-        # # Expand the attention mask
-        # if use_sdpa_attention_masks:
-        #     # Expand the attention mask for SDPA.
-        #     # [bsz, seq_len] -> [bsz, 1, seq_len, seq_len]
-        #     if self.config.is_decoder:
-        #         extended_attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-        #             attention_mask,
-        #             input_shape,
-        #             embedding_output,
-        #             past_key_values_length,
-        #         )
-        #     else:
-        #         extended_attention_mask = _prepare_4d_attention_mask_for_sdpa(
-        #             attention_mask, embedding_output.dtype, tgt_len=seq_length
-        #         )
-        # else:
-        #     # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
-        #     # ourselves in which case we just need to make it broadcastable to all heads.
-        #     extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
-
-        # # If a 2D or 3D attention mask is provided for the cross-attention
-        # # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
-        # if self.config.is_decoder and encoder_hidden_states is not None:
-        #     encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
-        #     encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
-        #     if encoder_attention_mask is None:
-        #         encoder_attention_mask = torch.ones(encoder_hidden_shape, device=device)
-
-        #     if use_sdpa_attention_masks:
-        #         # Expand the attention mask for SDPA.
-        #         # [bsz, seq_len] -> [bsz, 1, seq_len, seq_len]
-        #         encoder_extended_attention_mask = _prepare_4d_attention_mask_for_sdpa(
-        #             encoder_attention_mask, embedding_output.dtype, tgt_len=seq_length
-        #         )
-        #     else:
-        #         encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
-        # else:
-        #     encoder_extended_attention_mask = None
-
         # Prepare head mask if needed
         # 1.0 in head_mask indicate we keep the head
         # attention_probs has shape bsz x n_heads x N x N
@@ -1641,6 +1586,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
         )
         self.dropout = nn.Dropout(classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.norm = nn.LayerNorm(config.hidden_size)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1694,6 +1640,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
             if flip_mask.any():
                 flipped = torch.flip(pooled_output, dims=(-1,))
                 pooled_output = torch.where(flip_mask.unsqueeze(-1), flipped, pooled_output)
+        pooled_output = self.norm(pooled_output)
         logits = self.classifier(pooled_output)
 
         loss = None
@@ -1729,51 +1676,6 @@ class BertForSequenceClassification(BertPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-class BertTokenAttention(nn.Module):
-    """
-    Attention module for token classification.
-    Applies multi-head self-attention to the sequence output before token classification.
-    """
-    def __init__(self, config):
-        super().__init__()
-        self.num_heads = 4
-        self.head_dim = config.hidden_size // self.num_heads
-        self.query = nn.Linear(config.hidden_size, config.hidden_size)
-        self.key = nn.Linear(config.hidden_size, config.hidden_size)
-        self.value = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.norm = nn.LayerNorm(config.hidden_size)
-        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
-        self.tanh = nn.Tanh()
-
-    def forward(self, hidden_states, attention_mask=None):
-        batch_size, seq_len, hidden_size = hidden_states.size()
-        query = self.query(hidden_states)
-        key = self.key(hidden_states)
-        value = self.value(hidden_states)
-
-        # Reshape for multi-head attention
-        query = query.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key = key.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        value = value.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # Compute attention scores
-        attn_scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(self.head_dim)
-        if attention_mask is not None:
-            mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, S)
-            attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
-        attn_probs = torch.softmax(attn_scores, dim=-1)
-        attn_probs = torch.nan_to_num(attn_probs, nan=0.0)
-        # attn_probs = self.dropout(attn_probs)
-
-        # Weighted sum
-        context = torch.matmul(attn_probs, value)  # (B, H, S, D)
-        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, hidden_size)
-        context = self.norm(context)
-        context = self.fc(context)
-        # context = self.tanh(context)
-        return context
-
 @add_start_docstrings(
     """
     Bert Model with a token classification head on top (a linear layer on top of the hidden-states output) e.g. for
@@ -1795,7 +1697,6 @@ class BertForTokenClassification(BertPreTrainedModel):
         self.fc = nn.Linear(config.hidden_size, config.hidden_size)
         self.tanh = nn.Tanh()
         self.relu = nn.ReLU()  
-        self.attention = BertTokenAttention(config)
         self.norm = nn.LayerNorm(config.hidden_size)
 
         # Initialize weights and apply final processing
@@ -1843,12 +1744,10 @@ class BertForTokenClassification(BertPreTrainedModel):
         sequence_output = outputs[0]
         sequence_output = self.fc(self.relu(sequence_output))
         
-        # sequence_output = self.attention(sequence_output, attention_mask)
-
         if self.training:
             sequence_output = self.dropout(sequence_output)
             batch_size, seq_len, _ = sequence_output.size()
-            token_flip_mask = torch.rand(batch_size, seq_len, device=sequence_output.device) < 0.5
+            token_flip_mask = torch.rand(batch_size, seq_len, device=sequence_output.device) < 1.0
             if token_flip_mask.any():
                 flipped_tokens = torch.flip(sequence_output, dims=(-1,))
                 sequence_output = torch.where(token_flip_mask.unsqueeze(-1), flipped_tokens, sequence_output)

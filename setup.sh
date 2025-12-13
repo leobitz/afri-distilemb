@@ -9,3 +9,4 @@ gdown https://drive.google.com/uc?id=1x1AIVV2ipmOJtjDLnxDTCafkhhBoMOZS -O embedd
 gdown https://drive.google.com/uc?id=1V-eAsdkvahGYZdrUfrpk9aulqBXV0j3o -O downstream-data/downstream-dataset.zip
 # unzip and overwrite the downstream-data files
 unzip downstream-data/downstream-dataset.zip -d downstream-data/
+hf download leobitz/distil-emb-base --local-dir distil-emb-base
