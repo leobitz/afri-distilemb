@@ -1182,27 +1182,79 @@ class AttentionPooling(nn.Module):
         
         return pooled_output
 
-class LSTMEncoder(nn.Module):
+ACTIVATIONS = {
+    "tanh": nn.Tanh(),
+    "relu": nn.ReLU(),
+    "gelu": nn.GELU(),
+    "leaky_relu": nn.LeakyReLU(),
+}
+
+class LSTMLayers(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         bidirectional = not config.is_decoder
         if config.num_hidden_layers > 0:
-            self.lstm = nn.LSTM(
-                input_size=config.hidden_size,
-                hidden_size=config.hidden_size // 2,
-                num_layers=config.num_hidden_layers,
-                batch_first=True,
-                dropout=config.hidden_dropout_prob if config.num_hidden_layers > 1 else 0,
-                bidirectional=bidirectional,  # LSTM is bidirectional for encoder
-            )
+            self.lstms = []
+            for _ in range(config.num_hidden_layers):
+                lstm_layer = nn.LSTM(
+                    input_size=config.hidden_size,
+                    hidden_size=config.hidden_size // 2,
+                    num_layers=1,
+                    batch_first=True,
+                    bidirectional=bidirectional,  # LSTM is bidirectional for encoder
+                )
+                self.lstms.append(lstm_layer)
+            self.lstms = nn.ModuleList(self.lstms)
+        else:
+            self.lstms = nn.Identity()
+        self.gradient_checkpointing = False
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.activation = ACTIVATIONS['gelu']
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.norms = nn.ModuleList([nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) for _ in range(config.num_hidden_layers)])
+        
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        mask_2d: Optional[torch.FloatTensor] = None,
+    ) -> torch.Tensor:
+        if not isinstance(self.lstms, nn.Identity) and self.config.num_hidden_layers > 0:
+            if mask_2d is not None:
+                lengths = mask_2d.sum(dim=1).cpu()
+                lengths = lengths.clamp(min=1)
+            else:
+                lengths = None
+                
+            for i, lstm_layer in enumerate(self.lstms):
+                _hidden_state = hidden_states
+                if mask_2d is not None:
+                    packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
+                    packed_output, (h, c) = lstm_layer(packed)
+                    hidden_states, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+                else:
+                    hidden_states, (h, c)  = lstm_layer(hidden_states)
+
+                output = hidden_states
+                # hidden_states = self.activation(hidden_states + _hidden_state)
+                # hidden_states = self.norm(hidden_states)
+                # hidden_states = self.dropout(hidden_states)
+        else:
+            output = hidden_states
+
+        return output
+
+class LSTMEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        if config.num_hidden_layers > 0:
+            self.lstm = LSTMLayers(config)
         else:
             self.lstm = nn.Identity()
         self.gradient_checkpointing = False
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
-        self.fc2 = nn.Linear(config.hidden_size, config.hidden_size)
-        self.distill_alpha = nn.Parameter(torch.tensor(1.0))
         
 
     def forward(
@@ -1241,19 +1293,20 @@ class LSTMEncoder(nn.Module):
                     # Fallback: don't use packing
                     mask_2d = None
                 
-                if mask_2d is not None:
-                    lengths = mask_2d.sum(dim=1).cpu()
-                    # Ensure lengths are at least 1 to avoid empty sequences
-                    lengths = lengths.clamp(min=1)
-                    packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
-                    packed_output, (h, c) = self.lstm(packed)
-                    output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
-                else:
-                    output, (h, c)  = self.lstm(hidden_states)
+                output = self.lstm(hidden_states, mask_2d=mask_2d)
+                # if mask_2d is not None:
+                #     lengths = mask_2d.sum(dim=1).cpu()
+                #     # Ensure lengths are at least 1 to avoid empty sequences
+                #     lengths = lengths.clamp(min=1)
+                #     packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
+                #     packed_output, (h, c) = self.lstm(packed)
+                #     output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+                # else:
+                #     output, (h, c)  = self.lstm(hidden_states)
             else:
                 output, (h, c)  = self.lstm(hidden_states)
 
-            output = self.fc(output)
+            # output = self.fc(output)
         else:
             output = hidden_states
 
@@ -1743,10 +1796,12 @@ class BertTokenAttention(nn.Module):
         self.value = nn.Linear(config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.norm = nn.LayerNorm(config.hidden_size)
-        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
+        self.fc = nn.Linear(config.hidden_size, config.hidden_size * 2)
+        self.fc2 = nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.tanh = nn.Tanh()
 
     def forward(self, hidden_states, attention_mask=None):
+        # hidden_states = self.norm(hidden_states)
         batch_size, seq_len, hidden_size = hidden_states.size()
         query = self.query(hidden_states)
         key = self.key(hidden_states)
@@ -1769,8 +1824,12 @@ class BertTokenAttention(nn.Module):
         # Weighted sum
         context = torch.matmul(attn_probs, value)  # (B, H, S, D)
         context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, hidden_size)
-        context = self.norm(context)
-        context = self.fc(context)
+        # context = self.norm(context) 
+        _ = context
+        context = self.fc(context  + hidden_states) 
+        context = torch.relu(context)
+        context = self.dropout(context)
+        context = self.fc2(context) + _
         # context = self.tanh(context)
         return context
 
@@ -1797,6 +1856,7 @@ class BertForTokenClassification(BertPreTrainedModel):
         self.relu = nn.ReLU()  
         self.attention = BertTokenAttention(config)
         self.norm = nn.LayerNorm(config.hidden_size)
+        self.loss_fn = CrossEntropyLoss(label_smoothing=config.label_smoothing_factor)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1841,24 +1901,23 @@ class BertForTokenClassification(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        sequence_output = self.fc(self.relu(sequence_output))
         
         # sequence_output = self.attention(sequence_output, attention_mask)
+        # sequence_output = self.fc(self.relu(sequence_output))
 
-        if self.training:
-            sequence_output = self.dropout(sequence_output)
-            batch_size, seq_len, _ = sequence_output.size()
-            token_flip_mask = torch.rand(batch_size, seq_len, device=sequence_output.device) < 0.5
-            if token_flip_mask.any():
-                flipped_tokens = torch.flip(sequence_output, dims=(-1,))
-                sequence_output = torch.where(token_flip_mask.unsqueeze(-1), flipped_tokens, sequence_output)
+        # if self.training:
+        sequence_output = self.dropout(sequence_output)
+            # batch_size, seq_len, _ = sequence_output.size()
+            # token_flip_mask = torch.rand(batch_size, seq_len, device=sequence_output.device) < 0.1
+            # if token_flip_mask.any():
+            #     flipped_tokens = torch.flip(sequence_output, dims=(-1,))
+            #     sequence_output = torch.where(token_flip_mask.unsqueeze(-1), flipped_tokens, sequence_output)
         sequence_output = self.norm(sequence_output)
         logits = self.classifier(sequence_output)
 
         loss = None
         if labels is not None:
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            loss = self.loss_fn(logits.view(-1, self.num_labels), labels.view(-1))
 
         if not return_dict:
             output = (logits,) + outputs[2:]

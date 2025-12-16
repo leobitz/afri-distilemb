@@ -150,6 +150,7 @@ class DistillModelConfig(PretrainedConfig):
         encoder_type="bert",  # 'bert', 'lstm'
         distill_config: DistillEmbConfig = None,
         distill_pretrained_model_name: str = None,
+        label_smoothing_factor: float = 0.0,
         **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
@@ -173,4 +174,4 @@ class DistillModelConfig(PretrainedConfig):
         self.distill_config = distill_config
         self.encoder_type = encoder_type
         self.distill_pretrained_model_name = distill_pretrained_model_name
-
+        self.label_smoothing_factor = label_smoothing_factor
