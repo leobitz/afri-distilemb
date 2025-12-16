@@ -9,3 +9,4 @@
 **/downstream-data/
 *.tar
 pretrained-data/*
+.ipynb_checkpoints/*

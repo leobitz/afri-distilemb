@@ -1694,7 +1694,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
         )
         self.dropout = nn.Dropout(classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
-
+        
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1766,7 +1766,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
                 else:
                     loss = loss_fct(logits, labels)
             elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss()
+                loss_fct = CrossEntropyLoss(label_smoothing=self.config.label_smoothing_factor)
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
             elif self.config.problem_type == "multi_label_classification":
                 loss_fct = BCEWithLogitsLoss()
@@ -1781,57 +1781,6 @@ class BertForSequenceClassification(BertPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
-class BertTokenAttention(nn.Module):
-    """
-    Attention module for token classification.
-    Applies multi-head self-attention to the sequence output before token classification.
-    """
-    def __init__(self, config):
-        super().__init__()
-        self.num_heads = 4
-        self.head_dim = config.hidden_size // self.num_heads
-        self.query = nn.Linear(config.hidden_size, config.hidden_size)
-        self.key = nn.Linear(config.hidden_size, config.hidden_size)
-        self.value = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.norm = nn.LayerNorm(config.hidden_size)
-        self.fc = nn.Linear(config.hidden_size, config.hidden_size * 2)
-        self.fc2 = nn.Linear(config.hidden_size * 2, config.hidden_size)
-        self.tanh = nn.Tanh()
-
-    def forward(self, hidden_states, attention_mask=None):
-        # hidden_states = self.norm(hidden_states)
-        batch_size, seq_len, hidden_size = hidden_states.size()
-        query = self.query(hidden_states)
-        key = self.key(hidden_states)
-        value = self.value(hidden_states)
-
-        # Reshape for multi-head attention
-        query = query.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key = key.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        value = value.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # Compute attention scores
-        attn_scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(self.head_dim)
-        if attention_mask is not None:
-            mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, S)
-            attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
-        attn_probs = torch.softmax(attn_scores, dim=-1)
-        attn_probs = torch.nan_to_num(attn_probs, nan=0.0)
-        # attn_probs = self.dropout(attn_probs)
-
-        # Weighted sum
-        context = torch.matmul(attn_probs, value)  # (B, H, S, D)
-        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, hidden_size)
-        # context = self.norm(context) 
-        _ = context
-        context = self.fc(context  + hidden_states) 
-        context = torch.relu(context)
-        context = self.dropout(context)
-        context = self.fc2(context) + _
-        # context = self.tanh(context)
-        return context
 
 @add_start_docstrings(
     """
@@ -1854,7 +1803,6 @@ class BertForTokenClassification(BertPreTrainedModel):
         self.fc = nn.Linear(config.hidden_size, config.hidden_size)
         self.tanh = nn.Tanh()
         self.relu = nn.ReLU()  
-        self.attention = BertTokenAttention(config)
         self.norm = nn.LayerNorm(config.hidden_size)
         self.loss_fn = CrossEntropyLoss(label_smoothing=config.label_smoothing_factor)
 
@@ -1901,17 +1849,8 @@ class BertForTokenClassification(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        
-        # sequence_output = self.attention(sequence_output, attention_mask)
-        # sequence_output = self.fc(self.relu(sequence_output))
 
-        # if self.training:
         sequence_output = self.dropout(sequence_output)
-            # batch_size, seq_len, _ = sequence_output.size()
-            # token_flip_mask = torch.rand(batch_size, seq_len, device=sequence_output.device) < 0.1
-            # if token_flip_mask.any():
-            #     flipped_tokens = torch.flip(sequence_output, dims=(-1,))
-            #     sequence_output = torch.where(token_flip_mask.unsqueeze(-1), flipped_tokens, sequence_output)
         sequence_output = self.norm(sequence_output)
         logits = self.classifier(sequence_output)
 

@@ -6,6 +6,7 @@ from tokenizer import CharTokenizer as Tokenizer
 import torch
 import json
 import os
+from sklearn.metrics import accuracy_score, f1_score
 
 def load_word_embeddings(file_path: str, target_words: set = None, header: bool = True, word_prob=1.0) -> dict:
     word2vec = {}
@@ -133,3 +134,126 @@ class LangDistillDataset(Dataset):
         neg_w2v = torch.Tensor(np.stack([self.wvectors[nw] for nw in xneg_words])).squeeze()
         # apply tanh to pos_w2v and neg_w2v
         return target_chars, pos_w2v, neg_w2v
+
+
+def anonymize_and_normalize_text(text: str, lowercase: bool = True) -> str:
+    """
+    Preprocess text exactly as in AfriSenti[](https://arxiv.org/pdf/2302.08956):
+    - Replace all @mentions with '@user'
+    - Remove all URLs
+    - Optionally lowercase (used for Nigerian languages in the paper)
+    - Clean up whitespace
+    
+    Args:
+        text (str): Raw input text
+        lowercase (bool): Set to True for Nigerian Pidgin, Hausa, etc.; False for others
+    
+    Returns:
+        str: Cleaned text
+    """
+    if not isinstance(text, str):
+        return text
+    
+    # 1. Replace @mentions with @user
+    text = re.sub(r'@[\w]+', '@user', text)
+    
+    # 2. Remove URLs
+    text = re.sub(r'http[s]?://\S+', '', text)                    # http:// or https://
+    text = re.sub(r'www\.\S+', '', text)                          # www.
+    text = re.sub(r'\b\S+\.(com|org|net|edu|gov)\b', '', text)     # domain.com
+    
+    # 3. Optional lowercasing (used in AfriSenti for Nigerian languages)
+    if lowercase:
+        text = text.lower()
+    
+    # 4. Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
+
+def sentiment_eval(trainer, tokenizer, df):
+    
+    model = trainer.model
+    model.eval()
+    # Ensure 'language' column exists in df
+    test_df = df[df['split'] == 'test'][['text', 'label', 'lang']]
+    languages = test_df['lang'].unique()
+    per_language_f1 = {}
+
+    batch_size = 16
+
+    for lang in languages:
+        if lang == 'tg' or lang == 'or':
+            continue
+        lang_df = test_df[test_df['lang'] == lang]
+        texts = lang_df['text'].tolist()
+        labels = lang_df['label'].values
+        preds = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+            batch_labels = labels[i:i+batch_size]
+            tokenized = tokenizer(
+                batch_texts,
+                padding='longest',
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+                return_attention_mask=True,
+                padding_side="right"
+            )
+            with torch.no_grad():
+                inputs = {k: v.cuda() for k, v in tokenized.items()}
+                outputs = model(**inputs)
+                batch_preds = outputs.logits.argmax(dim=-1).cpu().numpy()
+                preds.extend(batch_preds)
+        f1 = f1_score(labels, preds, average='macro', labels=labels)
+        per_language_f1[lang] = f1
+
+    # Print per-language F1
+    for lang, f1 in per_language_f1.items():
+        print(f"Language: {lang}, F1: {f1:.4f}")
+
+    # Average F1
+    average_f1 = sum(per_language_f1.values()) / len(per_language_f1)
+    print(f"Average F1 across languages: {average_f1:.4f}")
+
+    special_languages = ["tg", "or"]
+    special_f1_scores = {}
+
+    for lang in special_languages:
+        lang_df = test_df[test_df["lang"] == lang]
+        if lang_df.empty:
+            print(f"No samples found for language '{lang}'.")
+            continue
+
+        lang_texts = lang_df["text"].tolist()
+        lang_labels = lang_df["label"].values
+        lang_preds = []
+
+        for i in range(0, len(lang_texts), batch_size):
+            batch_texts = lang_texts[i:i + batch_size]
+            tokenized = tokenizer(
+                batch_texts,
+                padding="longest",
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+                return_attention_mask=True,
+                padding_side="right"
+            )
+            with torch.no_grad():
+                inputs = {k: v.cuda() for k, v in tokenized.items()}
+                outputs = model(**inputs)
+                batch_preds = outputs.logits.argmax(dim=-1).cpu().numpy()
+                lang_preds.extend(batch_preds)
+
+        f1 = f1_score(lang_labels, lang_preds, average="macro", labels=lang_labels)
+        per_language_f1[lang] = f1
+        special_f1_scores[lang] = f1
+        print(f"Language: {lang}, F1: {f1:.4f}")
+
+    if special_f1_scores:
+        special_average_f1 = sum(special_f1_scores.values()) / len(special_f1_scores)
+        print(f"Average F1 for special languages: {special_average_f1:.4f}")
+    else:
+        print("No F1 scores computed for the requested languages.")

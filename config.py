@@ -175,3 +175,4 @@ class DistillModelConfig(PretrainedConfig):
         self.encoder_type = encoder_type
         self.distill_pretrained_model_name = distill_pretrained_model_name
         self.label_smoothing_factor = label_smoothing_factor
+        self.is_decoder = False

@@ -48,6 +48,8 @@ def load_news_dataset():
         all_data.to_parquet(f'{data_path}/masakhanews.parquet', index=False)
     else:
         all_data = pd.read_parquet(f'{data_path}/masakhanews.parquet')
+    # category to label
+    all_data['label'] = all_data['category']
     print(f'Loaded {len(all_data)} rows from masakhanews.parquet columns {all_data.columns}')
     unque_labels = set(all_data['label'].unique())
     return all_data, sorted(unque_labels)
@@ -217,10 +219,41 @@ def load_sentiment():
         print(f'Loaded {len(df)} rows from sentiment.parquet columns {df.columns}')
     # remove rows with label == label
     df = df[df['label'] != 'label']
+    df = df[df['text'] != 'tweet'].reset_index(drop=True)
     unique_labels = set(df['label'].unique())
     # print(f'Unique labels: {unique_labels}')
     return df, sorted(unique_labels)
 
 
-
-
+def load_hate():
+    path = "downstream-data/hate.parquet"
+    if not os.path.exists(path):
+        train_dfs = []
+        test_dfs = []
+        val_dfs = []
+        for lang in ['amh', 'arq', 'ary', 'hau', 'ibo', 'kin', 'orm', 'som',
+                         'swa', 'pcm', 'tir', 'twi', 'xho', 'yor', 'zul']:
+            ds = load_dataset("afrihate/afrihate", lang)
+            tdf = ds['train'].to_pandas()
+            tdf['lang'] = lang
+            train_dfs.append(tdf)
+            tdf = ds['test'].to_pandas()
+            tdf['lang'] = lang
+            test_dfs.append(tdf)
+            tdf = ds['validation'].to_pandas()
+            tdf['lang'] = lang
+            val_dfs.append(tdf)
+        train_df = pd.concat(train_dfs).reset_index(drop=True)
+        test_df = pd.concat(test_dfs).reset_index(drop=True)
+        val_df = pd.concat(val_dfs).reset_index(drop=True)
+        train_df['split'] = 'train'
+        test_df['split'] = 'test'
+        val_df['split'] = 'val'
+        df = pd.concat([train_df, test_df, val_df]).reset_index(drop=True)
+        df.to_parquet(path)
+    else:
+        df = pd.read_parquet(path)
+    # tweet to text
+    df = df.rename(columns={'tweet': 'text'})
+    
+    return df, sorted(set(df['label'].unique()))
