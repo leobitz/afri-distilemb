@@ -11,3 +11,5 @@
 pretrained-data/*
 .ipynb_checkpoints/*
 pretrained_models/*
+wandb/
+results/

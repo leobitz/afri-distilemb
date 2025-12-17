@@ -1,20 +1,14 @@
-from modeling_distillemb import BertModel, BertForSequenceClassification
-from distill_emb import DistillEmbSmall, DistillEmb
+from modeling_distillemb import BertForSequenceClassification
+from distill_emb import DistillEmb
 from config import DistillModelConfig, DistillEmbConfig
 import torch
 from tokenizer import CharTokenizer
-from knn_classifier import KNNTextClassifier
-from data_loader import load_sentiment, load_ner_dataset, load_pos_dataset
+from data_loader import load_sentiment
 from data_loader import load_news_dataset
-import pandas as pd
-from retrieval import build_json_pairs, top1_accuracy
 import os
-import re
-from datasets import Dataset, DatasetDict
-import random
-import string
+from datasets import Dataset
 from typing import Dict, Any
-from transformers import Trainer, TrainingArguments, DataCollatorWithPadding
+from transformers import Trainer, TrainingArguments
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score
 import os
@@ -22,7 +16,7 @@ import argparse
 from data_loader import *
 from helper import anonymize_and_normalize_text
 from huggingface_hub import snapshot_download
-
+import pandas as pd
 
 parser = argparse.ArgumentParser()
 
@@ -46,6 +40,10 @@ parser.add_argument("--grad_accumulation_steps", type=int, default=1)
 parser.add_argument("--pretrained", type=int, default=1)
 parser.add_argument("--logging_step", type=int, default=1)
 parser.add_argument("--wandb_logging", type=int, default=1)
+parser.add_argument("--num_samples", type=int, default=-1)
+parser.add_argument("--run_id", type=str, default=None)
+
+
 
 args = parser.parse_args()
 
@@ -65,7 +63,14 @@ warmup_ratio = args.warmup_ratio
 grad_accumulation_steps = args.grad_accumulation_steps
 pretrained_distill = bool(args.pretrained)
 logging_step = args.logging_step
-wandb_logging = bool(args.wandb)
+wandb_logging = bool(args.wandb_logging)
+num_samples = args.num_samples
+run_id = args.run_id 
+
+is_pretrained = "pretrained" if pretrained_distill else "scratch"
+run_name = f"{dataset_name}_{distill_emb_model_id.replace('/', '_')}_hs{hidden_size}_layers{num_hidden_layers}_{is_pretrained}_{run_id}"
+if wandb_logging:
+    os.environ["WANDB_PROJECT"] = "distillemb"
 
 model_dir = snapshot_download(distill_emb_model_id, local_dir=f"./pretrained_models/{distill_emb_model_id}")
 distill_model = DistillEmb.from_pretrained(pretrained_model_name_or_path=model_dir)
@@ -92,8 +97,8 @@ elif dataset_name == 'hate':
     df, labels = load_hate()
 else:
     raise ValueError(f"Unknown dataset name: {dataset_name}")
-
-df = df.sample(100, random_state=42).reset_index(drop=True)
+if num_samples > 0:
+    df = df.sample(num_samples, random_state=42).reset_index(drop=True)
 
 assert 'text' in df.columns, f"Dataframe must contain a 'text' column, found columns: {df.columns}"
 assert 'label' in df.columns, f"Dataframe must contain a 'label' column, found columns: {df.columns}"
@@ -178,8 +183,7 @@ def compute_metrics(eval_pred):
     f1 = f1_score(labels, predictions, average='weighted', labels=labels)
     f1_macro = f1_score(labels, predictions, average='macro', labels=labels)
     f1_micro = f1_score(labels, predictions, average='micro', labels=labels)
-    f1_binary = f1_score(labels, predictions, average='binary', labels=labels)
-    return {"accuracy": acc, "f1_weighted": f1, "f1_macro": f1_macro, "f1_micro": f1_micro, "f1_binary": f1_binary}
+    return {"accuracy": acc, "f1_weighted": f1, "f1_macro": f1_macro, "f1_micro": f1_micro}
 
 dataloader_num_workers=os.cpu_count() - 1
 
@@ -200,7 +204,9 @@ training_args = TrainingArguments(
     lr_scheduler_type="cosine",
     dataloader_num_workers=dataloader_num_workers,        # Number of CPU workers for data loading
     dataloader_pin_memory=True,      # Faster GPU transfer
-    gradient_accumulation_steps=grad_accumulation_steps
+    gradient_accumulation_steps=grad_accumulation_steps,
+    run_name=run_name,
+    project="distillemb"
 )
 
 trainer = Trainer(
@@ -215,6 +221,49 @@ trainer = Trainer(
 
 trainer.train()
 
-# Evaluate the model after training
-eval_results = trainer.evaluate()
-print(f"Evaluation results: {eval_results}")
+
+model = trainer.model
+model.eval()
+
+test_df = df[df['split'] == 'test'][['text', 'label', 'lang']]
+languages = test_df['lang'].unique()
+per_language_f1 = {}
+all_preds = []
+all_labels = test_df['label'].values
+for lang in languages:
+    if lang == 'tg' or lang == 'or':
+        continue
+    lang_df = test_df[test_df['lang'] == lang]
+    texts = lang_df['text'].tolist()
+    labels = lang_df['label'].values
+    preds = []
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i+batch_size]
+        batch_labels = labels[i:i+batch_size]
+        tokenized = tokenizer(
+            batch_texts,
+            padding='longest',
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+            return_attention_mask=True,
+            padding_side="right"
+        )
+        with torch.no_grad():
+            inputs = {k: v.cuda() for k, v in tokenized.items()}
+            outputs = model(**inputs)
+            batch_preds = outputs.logits.cpu().numpy()
+            preds.append(batch_preds)
+    preds = np.vstack(preds)
+    evals = compute_metrics((preds, labels))
+    per_language_f1[lang] = evals
+    all_preds.extend(preds)
+
+all_preds = np.vstack(all_preds)
+all_eval = compute_metrics((all_preds, all_labels))
+per_language_f1['all'] = all_eval
+# 
+df = pd.DataFrame.from_dict(per_language_f1, orient='index')
+# create eval_results directory if it doesn't exist
+os.makedirs(f'eval_results/{dataset_name}', exist_ok=True)
+df.to_csv(f'eval_results/{dataset_name}/{run_name}.csv')
