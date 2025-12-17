@@ -250,12 +250,19 @@ class BertEmbeddings(nn.Module):
 
 
 
-class DistilEmbeddings(nn.Module):
+class DistillEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     def __init__(self, config):
         super().__init__()
-        self.word_embeddings = DistillEmb.from_pretrained(pretrained_model_name_or_path=config.distill_pretrained_model_name) 
+        if config.distill_config is not None and config.distill_pretrained_model_name is not None:
+            self.word_embeddings = DistillEmb.from_pretrained(pretrained_model_name_or_path=config.distill_pretrained_model_name, config=config.distill_config) 
+        elif config.distill_config is not None:
+            self.word_embeddings = DistillEmb(config=config.distill_config)
+        elif config.distill_pretrained_model_name is not None:
+            self.word_embeddings = DistillEmb.from_pretrained(pretrained_model_name_or_path=config.distill_pretrained_model_name)
+        else:
+            raise ValueError("DistillEmbeddings requires distill_config and distill_pretrained_model_name in config.")
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
         output_emb_size  = 512
@@ -1351,7 +1358,7 @@ class BertModel(BertPreTrainedModel):
         if "bert" in config.embedding_type.lower():
             self.embeddings = BertEmbeddings(config)
         elif "distill" in config.embedding_type.lower():
-            self.embeddings = DistilEmbeddings(config)
+            self.embeddings = DistillEmbeddings(config)
         elif 'fasttext' in config.embedding_type.lower():
             self.embeddings = FasttextEmbeddings(config)
         else:

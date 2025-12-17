@@ -21,6 +21,7 @@ import os
 import argparse
 from data_loader import *
 from helper import anonymize_and_normalize_text
+from huggingface_hub import snapshot_download
 
 
 parser = argparse.ArgumentParser()
@@ -42,6 +43,9 @@ parser.add_argument("--label_smoothing_factor", type=float, default=0.15)
 parser.add_argument("--max_grad_norm", type=float, default=5.0)
 parser.add_argument("--warmup_ratio", type=float, default=0.0)
 parser.add_argument("--grad_accumulation_steps", type=int, default=1)
+parser.add_argument("--pretrained", type=int, default=1)
+parser.add_argument("--logging_step", type=int, default=1)
+parser.add_argument("--wandb_logging", type=int, default=1)
 
 args = parser.parse_args()
 
@@ -59,13 +63,14 @@ label_smoothing_factor = args.label_smoothing_factor
 max_grad_norm = args.max_grad_norm
 warmup_ratio = args.warmup_ratio
 grad_accumulation_steps = args.grad_accumulation_steps
+pretrained_distill = bool(args.pretrained)
+logging_step = args.logging_step
+wandb_logging = bool(args.wandb)
 
-
-
-tokenizer = CharTokenizer.from_pretrained(pretrained_directory=distill_emb_model_id)
-distill_config = DistillEmbConfig.from_pretrained(pretrained_model_name_or_path=distill_emb_model_id)
-distill_model = DistillEmb.from_pretrained(pretrained_model_name_or_path=distill_emb_model_id)
-
+model_dir = snapshot_download(distill_emb_model_id, local_dir=f"./pretrained_models/{distill_emb_model_id}")
+distill_model = DistillEmb.from_pretrained(pretrained_model_name_or_path=model_dir)
+tokenizer = CharTokenizer.from_pretrained(pretrained_directory=model_dir)
+distill_config = DistillEmbConfig.from_pretrained(pretrained_model_name_or_path=model_dir)
 
 config = DistillModelConfig(
     hidden_size=hidden_size,
@@ -75,7 +80,7 @@ config = DistillModelConfig(
     encoder_type='lstm', #'lstm'
     char_vocab_size=tokenizer.char_vocab_size,
     distill_config=distill_config,
-    distill_pretrained_model_name=distill_emb_model_id
+    distill_pretrained_model_name=distill_emb_model_id if pretrained_distill else None
 )
 
 
@@ -87,6 +92,8 @@ elif dataset_name == 'hate':
     df, labels = load_hate()
 else:
     raise ValueError(f"Unknown dataset name: {dataset_name}")
+
+df = df.sample(100, random_state=42).reset_index(drop=True)
 
 assert 'text' in df.columns, f"Dataframe must contain a 'text' column, found columns: {df.columns}"
 assert 'label' in df.columns, f"Dataframe must contain a 'label' column, found columns: {df.columns}"
@@ -128,7 +135,7 @@ def preprocess_function(examples: Dict[str, Any]):
     batch = tokenizer(
         examples["text"],
         padding=False,
-        max_length=512,
+        max_length=max_seq_length,
         return_attention_mask=False,
     )
 
@@ -171,7 +178,8 @@ def compute_metrics(eval_pred):
     f1 = f1_score(labels, predictions, average='weighted', labels=labels)
     f1_macro = f1_score(labels, predictions, average='macro', labels=labels)
     f1_micro = f1_score(labels, predictions, average='micro', labels=labels)
-    return {"accuracy": acc, "f1_weighted": f1, "f1_macro": f1_macro, "f1_micro": f1_micro}
+    f1_binary = f1_score(labels, predictions, average='binary', labels=labels)
+    return {"accuracy": acc, "f1_weighted": f1, "f1_macro": f1_macro, "f1_micro": f1_micro, "f1_binary": f1_binary}
 
 dataloader_num_workers=os.cpu_count() - 1
 
@@ -182,10 +190,10 @@ training_args = TrainingArguments(
     per_device_eval_batch_size=batch_size,
     num_train_epochs=num_train_epochs,
     weight_decay=weight_decay,
-    report_to=[],
+    report_to=["wandb"] if wandb_logging else [],
     eval_strategy="epoch",  
     logging_strategy="steps",
-    logging_steps=10,
+    logging_steps=logging_step,
     label_smoothing_factor=label_smoothing_factor,
     max_grad_norm=max_grad_norm,
     warmup_ratio=warmup_ratio,
