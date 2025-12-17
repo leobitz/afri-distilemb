@@ -266,6 +266,13 @@ print(all_preds.shape, all_labels.shape)
 all_eval = compute_metrics((all_preds, all_labels))
 per_language_f1['all'] = all_eval
 
+metric_keys = next(iter(per_language_f1.values())).keys()
+avg_metrics = {}
+for metric in metric_keys:
+    vals = [scores[metric] for lang, scores in per_language_f1.items() if lang != 'all']
+    avg_metrics[metric] = float(np.mean(vals))
+per_language_f1['avg'] = avg_metrics
+
 all_preds = []
 all_labels = []
 for lang in languages:
