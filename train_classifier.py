@@ -229,7 +229,7 @@ test_df = df[df['split'] == 'test'][['text', 'label', 'lang']]
 languages = test_df['lang'].unique()
 per_language_f1 = {}
 all_preds = []
-all_labels = test_df['label'].values
+all_labels = []
 for lang in languages:
     if lang == 'tg' or lang == 'or':
         continue
@@ -258,11 +258,53 @@ for lang in languages:
     evals = compute_metrics((preds, labels))
     per_language_f1[lang] = evals
     all_preds.extend(preds)
+    all_labels.extend(labels)
 
 all_preds = np.vstack(all_preds)
+all_labels = np.array(all_labels)
+print(all_preds.shape, all_labels.shape)
 all_eval = compute_metrics((all_preds, all_labels))
 per_language_f1['all'] = all_eval
-# 
+
+all_preds = []
+all_labels = []
+for lang in languages:
+    if lang != 'tg' and lang != 'or':
+        continue
+    lang_df = test_df[test_df['lang'] == lang]
+    texts = lang_df['text'].tolist()
+    labels = lang_df['label'].values
+    preds = []
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i+batch_size]
+        batch_labels = labels[i:i+batch_size]
+        tokenized = tokenizer(
+            batch_texts,
+            padding='longest',
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+            return_attention_mask=True,
+            padding_side="right"
+        )
+        with torch.no_grad():
+            inputs = {k: v.cuda() for k, v in tokenized.items()}
+            outputs = model(**inputs)
+            batch_preds = outputs.logits.cpu().numpy()
+            preds.append(batch_preds)
+    preds = np.vstack(preds)
+    evals = compute_metrics((preds, labels))
+    per_language_f1[lang] = evals
+    all_preds.extend(preds)
+    all_labels.extend(labels)
+
+if len(all_labels) > 0:
+    all_preds = np.vstack(all_preds)
+    all_labels = np.array(all_labels)
+    print(all_preds.shape, all_labels.shape)
+    all_eval = compute_metrics((all_preds, all_labels))
+    per_language_f1['ood-lang'] = all_eval
+
 df = pd.DataFrame.from_dict(per_language_f1, orient='index')
 # create eval_results directory if it doesn't exist
 os.makedirs(f'eval_results/{dataset_name}', exist_ok=True)
