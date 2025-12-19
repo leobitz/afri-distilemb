@@ -13,3 +13,4 @@ pretrained-data/*
 pretrained_models/*
 wandb/
 results/
+distil-emb-base/

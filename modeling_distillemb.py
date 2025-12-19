@@ -1140,11 +1140,10 @@ class AttentionPooling(nn.Module):
         self.key = nn.Linear(config.hidden_size, config.hidden_size)
         self.value = nn.Linear(config.hidden_size, config.hidden_size)
         
-        self.norm = nn.LayerNorm(config.hidden_size)
+        # self.norm = nn.LayerNorm(config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.fc1 = nn.Linear(config.hidden_size, config.hidden_size*2)
-        self.fc2 = nn.Linear(config.hidden_size*2, config.hidden_size)
-        self.tanh = nn.Tanh()
+        # self.fc1 = nn.Linear(config.hidden_size, config.hidden_size)
+        # self.tanh = nn.Tanh()
         
         # Learnable query vector for pooling
         self.pool_query = nn.Parameter(torch.randn(1, 1, config.hidden_size))
@@ -1177,15 +1176,10 @@ class AttentionPooling(nn.Module):
         
         # Weighted sum
         context = torch.matmul(attention_probs, value)  # (B, H, 1, D)
-        context = context.transpose(1, 2).contiguous().view(batch_size, hidden_size)
+        pooled_output = context.transpose(1, 2).contiguous().view(batch_size, hidden_size)
         
         # Output projection
-        pooled_output = self.norm(context)
-        pooled_output = self.fc1(pooled_output)
-        pooled_output = torch.relu(pooled_output)
-        pooled_output = self.dropout(pooled_output)
-        pooled_output = self.fc2(pooled_output)
-        pooled_output = self.tanh(pooled_output)
+        # pooled_output = self.tanh(pooled_output)
         
         return pooled_output
 
@@ -1701,6 +1695,8 @@ class BertForSequenceClassification(BertPreTrainedModel):
         )
         self.dropout = nn.Dropout(classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
+        self.norm = nn.LayerNorm(config.hidden_size)
         
         # Initialize weights and apply final processing
         self.post_init()
@@ -1747,13 +1743,9 @@ class BertForSequenceClassification(BertPreTrainedModel):
 
         pooled_output = outputs[1]
 
-        if self.training:
-            pooled_output = self.dropout(pooled_output)
-            batch_size = pooled_output.size(0)
-            flip_mask = torch.rand(batch_size, device=pooled_output.device) < 0.5
-            if flip_mask.any():
-                flipped = torch.flip(pooled_output, dims=(-1,))
-                pooled_output = torch.where(flip_mask.unsqueeze(-1), flipped, pooled_output)
+        pooled_output = self.fc(pooled_output)
+        pooled_output = self.dropout(pooled_output)
+        pooled_output = self.norm(pooled_output)
         logits = self.classifier(pooled_output)
 
         loss = None
