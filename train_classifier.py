@@ -33,7 +33,7 @@ parser.add_argument("--batch_size", type=int, default=16)
 parser.add_argument("--learning_rate", type=float, default=1e-4)
 parser.add_argument("--num_train_epochs", type=int, default=10)
 parser.add_argument("--weight_decay", type=float, default=0.1)
-parser.add_argument("--label_smoothing_factor", type=float, default=0.15)
+parser.add_argument("--label_smoothing_factor", type=float, default=0.1)
 parser.add_argument("--max_grad_norm", type=float, default=5.0)
 parser.add_argument("--warmup_ratio", type=float, default=0.0)
 parser.add_argument("--grad_accumulation_steps", type=int, default=1)
@@ -265,6 +265,13 @@ all_labels = np.array(all_labels)
 print(all_preds.shape, all_labels.shape)
 all_eval = compute_metrics((all_preds, all_labels))
 per_language_f1['all'] = all_eval
+
+metric_keys = next(iter(per_language_f1.values())).keys()
+avg_metrics = {}
+for metric in metric_keys:
+    vals = [scores[metric] for lang, scores in per_language_f1.items() if lang != 'all']
+    avg_metrics[metric] = float(np.mean(vals))
+per_language_f1['avg'] = avg_metrics
 
 all_preds = []
 all_labels = []
