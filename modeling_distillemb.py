@@ -317,10 +317,10 @@ class DistillEmbeddings(nn.Module):
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
             # Randomly set 30% of embeddings to random vectors
-            if self.training:
-                mask = torch.rand(inputs_embeds.shape[:2], device=inputs_embeds.device) < 0.3
-                rand_embeds = torch.randn_like(inputs_embeds)
-                inputs_embeds = torch.where(mask.unsqueeze(-1), rand_embeds, inputs_embeds)
+            # if self.training:
+            #     mask = torch.rand(inputs_embeds.shape[:2], device=inputs_embeds.device) < 0.3
+            #     rand_embeds = torch.randn_like(inputs_embeds)
+            #     inputs_embeds = torch.where(mask.unsqueeze(-1), rand_embeds, inputs_embeds)
             if self.output_layer is not None:
                 inputs_embeds = self.output_layer(inputs_embeds)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
@@ -1251,7 +1251,11 @@ class LSTMEncoder(nn.Module):
         super().__init__()
         self.config = config
         if config.num_hidden_layers > 0:
-            self.lstm = LSTMLayers(config)
+            self.lstm = nn.LSTM(
+                input_size=config.hidden_size,
+                hidden_size=config.hidden_size // 2,
+                num_layers=config.num_hidden_layers,
+                    batch_first=True, bidirectional=True)
         else:
             self.lstm = nn.Identity()
         self.gradient_checkpointing = False
@@ -1294,20 +1298,19 @@ class LSTMEncoder(nn.Module):
                     # Fallback: don't use packing
                     mask_2d = None
                 
-                output = self.lstm(hidden_states, mask_2d=mask_2d)
-                # if mask_2d is not None:
-                #     lengths = mask_2d.sum(dim=1).cpu()
-                #     # Ensure lengths are at least 1 to avoid empty sequences
-                #     lengths = lengths.clamp(min=1)
-                #     packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
-                #     packed_output, (h, c) = self.lstm(packed)
-                #     output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
-                # else:
-                #     output, (h, c)  = self.lstm(hidden_states)
+                # output = self.lstm(hidden_states, mask_2d=mask_2d)
+                if mask_2d is not None:
+                    lengths = mask_2d.sum(dim=1).cpu()
+                    # Ensure lengths are at least 1 to avoid empty sequences
+                    lengths = lengths.clamp(min=1)
+                    packed = nn.utils.rnn.pack_padded_sequence(hidden_states, lengths, batch_first=True, enforce_sorted=False)
+                    packed_output, (h, c) = self.lstm(packed)
+                    output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True, total_length=hidden_states.size(1))
+                else:
+                    output, (h, c)  = self.lstm(hidden_states)
             else:
                 output, (h, c)  = self.lstm(hidden_states)
 
-            # output = self.fc(output)
         else:
             output = hidden_states
 
@@ -1363,7 +1366,7 @@ class BertModel(BertPreTrainedModel):
         self.encoder = ENCODER_CLASS(config)
 
         # self.pooler = BertPooler(config) if add_pooling_layer else None
-        self.pooler = AttentionPooling(config)
+        self.pooler = AttentionPooling(config) if add_pooling_layer else None
 
         self.attn_implementation = config._attn_implementation
         self.position_embedding_type = config.position_embedding_type
@@ -1484,57 +1487,7 @@ class BertModel(BertPreTrainedModel):
         if attention_mask is None:
             attention_mask = torch.ones((batch_size, seq_length + past_key_values_length), device=device)
 
-        # use_sdpa_attention_masks = (
-        #     self.attn_implementation == "sdpa"
-        #     and self.position_embedding_type == "absolute"
-        #     and head_mask is None
-        #     and not output_attentions
-        # )
 
-        # # Expand the attention mask
-        # if use_sdpa_attention_masks:
-        #     # Expand the attention mask for SDPA.
-        #     # [bsz, seq_len] -> [bsz, 1, seq_len, seq_len]
-        #     if self.config.is_decoder:
-        #         extended_attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-        #             attention_mask,
-        #             input_shape,
-        #             embedding_output,
-        #             past_key_values_length,
-        #         )
-        #     else:
-        #         extended_attention_mask = _prepare_4d_attention_mask_for_sdpa(
-        #             attention_mask, embedding_output.dtype, tgt_len=seq_length
-        #         )
-        # else:
-        #     # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
-        #     # ourselves in which case we just need to make it broadcastable to all heads.
-        #     extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
-
-        # # If a 2D or 3D attention mask is provided for the cross-attention
-        # # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
-        # if self.config.is_decoder and encoder_hidden_states is not None:
-        #     encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
-        #     encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
-        #     if encoder_attention_mask is None:
-        #         encoder_attention_mask = torch.ones(encoder_hidden_shape, device=device)
-
-        #     if use_sdpa_attention_masks:
-        #         # Expand the attention mask for SDPA.
-        #         # [bsz, seq_len] -> [bsz, 1, seq_len, seq_len]
-        #         encoder_extended_attention_mask = _prepare_4d_attention_mask_for_sdpa(
-        #             encoder_attention_mask, embedding_output.dtype, tgt_len=seq_length
-        #         )
-        #     else:
-        #         encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
-        # else:
-        #     encoder_extended_attention_mask = None
-
-        # Prepare head mask if needed
-        # 1.0 in head_mask indicate we keep the head
-        # attention_probs has shape bsz x n_heads x N x N
-        # input head_mask has shape [num_heads] or [num_hidden_layers x num_heads]
-        # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         encoder_outputs = self.encoder(
@@ -1781,6 +1734,34 @@ class BertForSequenceClassification(BertPreTrainedModel):
             attentions=outputs.attentions,
         )
 
+class SimpleAttentionWithMLP(nn.Module):
+    def __init__(self, config, num_heads=8):
+        super().__init__()
+        hidden_size = config.hidden_size
+        self.attention = nn.MultiheadAttention(hidden_size, num_heads, batch_first=True)
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size)
+        )
+        self.norm1 = nn.LayerNorm(hidden_size)
+        self.norm2 = nn.LayerNorm(hidden_size)
+        self.query = nn.Linear(hidden_size, hidden_size)
+        self.key = nn.Linear(hidden_size, hidden_size)
+        self.value = nn.Linear(hidden_size, hidden_size)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.config = config
+
+    def forward(self, x, mask=None):
+        q, k, v = self.query(x), self.key(x), self.value(x)
+        attn_out, _ = self.attention(q, k, v, key_padding_mask=mask)
+        x = self.norm1(attn_out + x)
+        x = self.dropout(x)
+        mlp_out = self.mlp(x)
+        x = self.dropout(mlp_out)
+        x = self.norm2(mlp_out + x)
+        return x
+
 @add_start_docstrings(
     """
     Bert Model with a token classification head on top (a linear layer on top of the hidden-states output) e.g. for
@@ -1800,10 +1781,10 @@ class BertForTokenClassification(BertPreTrainedModel):
         self.dropout = nn.Dropout(classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
         self.fc = nn.Linear(config.hidden_size, config.hidden_size)
-        self.tanh = nn.Tanh()
-        self.relu = nn.ReLU()  
         self.norm = nn.LayerNorm(config.hidden_size)
         self.loss_fn = CrossEntropyLoss(label_smoothing=config.label_smoothing_factor)
+        self.relu = nn.ReLU()
+        self.attention = SimpleAttentionWithMLP(config, num_heads=8)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1846,11 +1827,19 @@ class BertForTokenClassification(BertPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
+        
+        # print(attention_mask.shape, attention_mask.dtype, attention_mask[:10, :10])
+        key_padding_mask = None
+        if attention_mask is not None:
+            key_padding_mask = attention_mask.eq(0).to(torch.bool)  # (batch_size, seq_len)
+        
         sequence_output = outputs[0]
-
-        sequence_output = self.dropout(sequence_output)
-        sequence_output = self.norm(sequence_output)
+        
+        sequence_output = self.attention(sequence_output, mask=key_padding_mask)
+        # sequence_output = self.dropout(sequence_output)
+        # sequence_output = self.fc(sequence_output)
+        # sequence_output = self.dropout(sequence_output)
+        
         logits = self.classifier(sequence_output)
 
         loss = None
