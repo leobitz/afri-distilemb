@@ -284,6 +284,7 @@ class DistillEmbeddings(nn.Module):
         self.register_buffer(
             "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
         )
+        self.config = config
 
     def forward(
         self,
@@ -317,10 +318,10 @@ class DistillEmbeddings(nn.Module):
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
             # Randomly set 30% of embeddings to random vectors
-            # if self.training:
-            #     mask = torch.rand(inputs_embeds.shape[:2], device=inputs_embeds.device) < 0.3
-            #     rand_embeds = torch.randn_like(inputs_embeds)
-            #     inputs_embeds = torch.where(mask.unsqueeze(-1), rand_embeds, inputs_embeds)
+            if self.training:
+                mask = torch.rand(inputs_embeds.shape[:2], device=inputs_embeds.device) < self.config.distill_config.token_dropout
+                rand_embeds = torch.randn_like(inputs_embeds)
+                inputs_embeds = torch.where(mask.unsqueeze(-1), rand_embeds, inputs_embeds)
             if self.output_layer is not None:
                 inputs_embeds = self.output_layer(inputs_embeds)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)

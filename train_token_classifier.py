@@ -43,7 +43,7 @@ parser.add_argument("--logging_step", type=int, default=1)
 parser.add_argument("--wandb_logging", type=int, default=1)
 parser.add_argument("--num_samples", type=int, default=-1)
 parser.add_argument("--run_id", type=str, default=None)
-
+parser.add_argument("--token_dropout", type=float, default=0.5)
 
 
 args = parser.parse_args()
@@ -67,6 +67,7 @@ logging_step = args.logging_step
 wandb_logging = bool(args.wandb_logging)
 num_samples = args.num_samples
 run_id = args.run_id 
+token_dropout = args.token_dropout
 
 is_pretrained = "pretrained" if pretrained_distill else "scratch"
 run_name = f"{dataset_name}_{distill_emb_model_id.replace('/', '_')}_hs{hidden_size}_layers{num_hidden_layers}_{is_pretrained}_{run_id}"
@@ -86,7 +87,8 @@ config = DistillModelConfig(
     encoder_type='lstm', #'lstm'
     char_vocab_size=tokenizer.char_vocab_size,
     distill_config=distill_config,
-    distill_pretrained_model_name=distill_emb_model_id if pretrained_distill else None
+    distill_pretrained_model_name=distill_emb_model_id if pretrained_distill else None,
+    token_dropout=token_dropout
 )
 
 

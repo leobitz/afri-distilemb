@@ -1,14 +1,8 @@
-from modeling_distillemb import BertForSequenceClassification
-from distill_emb import DistillEmb
-from config import DistillModelConfig, DistillEmbConfig
-import torch
-from tokenizer import CharTokenizer
 from data_loader import load_sentiment
 from data_loader import load_news_dataset
-import os
 from datasets import Dataset
 from typing import Dict, Any
-from transformers import Trainer, TrainingArguments
+from transformers import AutoModelForSequenceClassification, Trainer, TrainingArguments, AutoTokenizer, DataCollatorWithPadding
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score
 import os
@@ -17,10 +11,11 @@ from data_loader import *
 from helper import anonymize_and_normalize_text
 from huggingface_hub import snapshot_download
 import pandas as pd
+import torch
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--distill_emb_model_id", type=str, required=True,
+parser.add_argument("--model_id", type=str, required=True,
                     help="Path or name of the DistillEmb model.")
 parser.add_argument("--dataset_name", type=str, required=True,
                     help="Dataset name (used to load parquet file).")
@@ -46,7 +41,7 @@ parser.add_argument("--token_dropout", type=float, default=0.5)
 
 args = parser.parse_args()
 
-distill_emb_model_id = args.distill_emb_model_id
+model_id = args.model_id
 dataset_name = args.dataset_name
 hidden_size = args.hidden_size
 num_hidden_layers = args.num_hidden_layers
@@ -69,26 +64,12 @@ token_dropout = args.token_dropout
 
 
 is_pretrained = "pretrained" if pretrained_distill else "scratch"
-run_name = f"{dataset_name}_{distill_emb_model_id.replace('/', '_')}_hs{hidden_size}_layers{num_hidden_layers}_{is_pretrained}_{run_id}"
+run_name = f"{dataset_name}_{model_id.replace('/', '_')}_hs{hidden_size}_layers{num_hidden_layers}_{is_pretrained}_{run_id}"
 if wandb_logging:
     os.environ["WANDB_PROJECT"] = "distillemb"
 
-model_dir = snapshot_download(distill_emb_model_id, local_dir=f"./pretrained_models/{distill_emb_model_id}")
-distill_model = DistillEmb.from_pretrained(pretrained_model_name_or_path=model_dir)
-tokenizer = CharTokenizer.from_pretrained(pretrained_directory=model_dir)
-distill_config = DistillEmbConfig.from_pretrained(pretrained_model_name_or_path=model_dir)
+model_dir = snapshot_download(model_id, local_dir=f"./pretrained_models/{model_id}")
 
-config = DistillModelConfig(
-    hidden_size=hidden_size,
-    num_hidden_layers=num_hidden_layers,
-    hidden_dropout_prob=hidden_dropout_prob,
-    embedding_type="distill",  # 'distilemb', 'fasttext'
-    encoder_type='lstm', #'lstm'
-    char_vocab_size=tokenizer.char_vocab_size,
-    distill_config=distill_config,
-    distill_pretrained_model_name=distill_emb_model_id if pretrained_distill else None,
-    token_dropout=token_dropout
-)
 
 
 if dataset_name == 'sentiment':
@@ -116,15 +97,20 @@ id2label = {idx: label for label, idx in label2id.items()}
 
 df['label'] = df['label'].map(label2id).astype(int)
 
-config.label2id = label2id
-config.id2label = id2label
-
 print(f"Converted labels to integers: {label2id}")
 
 num_labels = len(df['label'].unique())
-config.num_labels = num_labels
-model = BertForSequenceClassification(config)
-
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_id,
+    num_labels=num_labels,
+    id2label=id2label,
+    label2id=label2id,
+)
+tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
+# Ensure padding token exists for dynamic padding during collation
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token or tokenizer.unk_token
+    model.config.pad_token_id = tokenizer.pad_token_id
 labels = [x.item() for x in df['label'].unique()]
 print(labels)
 text_col = 'text'
@@ -149,35 +135,25 @@ def preprocess_function(examples: Dict[str, Any]):
     batch["labels"] = examples["label"]
     return batch
 
+def tokenize_function(examples):
+    result = tokenizer(examples['text'], padding='max_length', truncation=True, max_length=max_seq_length)
+    if 'label' in examples:
+        result['label'] = examples['label']
+    return result
+
 tokenized_train = train_dataset.map(
-    preprocess_function,
+    tokenize_function,
     batched=True,
     remove_columns=train_dataset.column_names,
 )
 
 tokenized_test = test_dataset.map(
-    preprocess_function,
+    tokenize_function,
     batched=True,
     remove_columns=test_dataset.column_names,
 )
 
 
-class CustomDataCollator:
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-
-    def __call__(self, features):
-        batch = self.tokenizer.pad(
-            features,
-            padding="longest",
-            max_length=max_seq_length,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        batch['labels'] = torch.tensor([f['labels'] for f in features], dtype=torch.long)
-        return batch
-
-data_collator = CustomDataCollator(tokenizer)
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
@@ -216,7 +192,7 @@ trainer = Trainer(
     args=training_args,
     train_dataset=tokenized_train,
     eval_dataset=tokenized_test,
-    data_collator=data_collator,
+    data_collator=DataCollatorWithPadding(tokenizer=tokenizer, padding='longest'),
     compute_metrics=compute_metrics,
 )
 

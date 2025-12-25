@@ -42,6 +42,7 @@ class DistillEmbConfig(PretrainedConfig):
         use_tanh=False,
         use_normalize=False,
         activation="relu",
+        token_dropout=0.3,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -55,6 +56,7 @@ class DistillEmbConfig(PretrainedConfig):
         self.use_tanh = use_tanh
         self.use_normalize = use_normalize
         self.activation = activation
+        self.token_dropout = token_dropout
 
 
 
